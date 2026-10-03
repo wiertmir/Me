@@ -1,18 +1,26 @@
 @inherits LayoutComponentBase
 
-<AuthorizeView>
-    <Authorized>
-        <nav aria-label="Account">
-            <a href="/account">Profile</a>
-            <a href="/account/security">Security</a>
-            <a href="/account/app-passwords">App passwords</a>
-            <AuthorizeView Roles="admin" Context="admin"><a href="/admin/users">Users</a></AuthorizeView>
-            <a href="/signout">Sign out</a>
-        </nav>
-    </Authorized>
-</AuthorizeView>
+<header class="site-header">
+    <div class="site-header-inner">
+        <a class="brand" href="/account"><img src="/img/mark.svg" alt="" width="28" height="28" /><span>Me</span></a>
+        <AuthorizeView>
+            <Authorized>
+                <nav class="site-nav" aria-label="Account">
+                    <NavLink href="/account" Match="NavLinkMatch.All">Profile</NavLink>
+                    <NavLink href="/account/security">Security</NavLink>
+                    <NavLink href="/account/app-passwords">App passwords</NavLink>
+                    <AuthorizeView Roles="admin" Context="admin"><NavLink href="/admin/users">Users</NavLink></AuthorizeView>
+                </nav>
+                <div class="who">
+                    <span class="who-name"><span class="visually-hidden">Signed in as </span>@context.User.Identity?.Name</span>
+                    <a href="/signout">Sign out</a>
+                </div>
+            </Authorized>
+        </AuthorizeView>
+    </div>
+</header>
 
-<main>
+<main class="page">
     @Body
 </main>
 

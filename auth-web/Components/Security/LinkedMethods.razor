@@ -6,8 +6,8 @@
     <div role="status">@notice</div>
     <div role="alert" class="error">@error</div>
     @if (failed) { <LoadFailed What="your linked sign-in methods" OnRetry="Reload" /> }
-    else if (rows is null) { <p>Loading…</p> }
-    else if (rows.Count == 0) { <p>No sign-in providers are configured.</p> }
+    else if (rows is null) { <p class="loading">Loading…</p> }
+    else if (rows.Count == 0) { <p class="empty">No sign-in providers are configured.</p> }
     else
     {
         <table>
@@ -21,13 +21,13 @@
                     <th scope="row">@name</th>
                     @if (identity is null)
                     {
-                        <td>Not linked</td>
-                        <td><button type="button" @onclick="() => Link(provider)">Link<span class="visually-hidden"> @name</span></button></td>
+                        <td data-label="Status"><span class="badge">Not linked</span></td>
+                        <td class="actions"><button type="button" @onclick="() => Link(provider)">Link<span class="visually-hidden"> @name</span></button></td>
                     }
                     else
                     {
-                        <td>Linked@(string.IsNullOrEmpty(identity.Email) ? "" : $" as {identity.Email}") on <Time Value="identity.CreatedAt" /></td>
-                        <td><button type="button" @onclick="() => AskUnlink(provider)">Unlink<span class="visually-hidden"> @name</span></button></td>
+                        <td data-label="Status"><span class="badge badge-ok">Linked</span>@(string.IsNullOrEmpty(identity.Email) ? "" : $" as {identity.Email}") since <Time Value="identity.CreatedAt" /></td>
+                        <td class="actions"><button type="button" @onclick="() => AskUnlink(provider)">Unlink<span class="visually-hidden"> @name</span></button></td>
                     }
                 </tr>
             }

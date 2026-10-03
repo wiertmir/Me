@@ -5,8 +5,10 @@
 {
     <dialog id="@id" aria-labelledby="@(id)-text" @onclose="Closed">
         <p id="@(id)-text">@r.Message</p>
-        <button type="button" autofocus @onclick="Cancel">Cancel</button>
-        <button type="button" @onclick="Confirm">@r.ConfirmText</button>
+        <div class="form-actions">
+            <button type="button" autofocus @onclick="Cancel">Cancel</button>
+            <button type="button" class="btn-danger" @onclick="Confirm">@r.ConfirmText</button>
+        </div>
     </dialog>
 }
 

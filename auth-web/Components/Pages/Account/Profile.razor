@@ -7,7 +7,7 @@
 <h1>Profile</h1>
 
 @if (failed) { <LoadFailed What="your profile" OnRetry="Load" /> }
-else if (user is null) { <p>Loading…</p> }
+else if (user is null) { <p class="loading">Loading…</p> }
 else
 {
     <form @onsubmit="Save" @onsubmit:preventDefault>
@@ -18,15 +18,17 @@ else
             <span id="name-hint" class="hint">1 to 64 characters.</span>
             @if (nameError is not null) { <span id="name-error" class="error" role="alert">@nameError</span> }
         </p>
-        <button type="submit">Save display name</button>
-        <span role="status">@saved</span>
+        <div class="form-actions">
+            <button type="submit">Save display name</button>
+            <span role="status">@saved</span>
+        </div>
     </form>
 
     <h2>Sign-in details</h2>
     <dl>
         <dt>Username</dt><dd>@user.Username</dd>
         <dt>Email</dt>
-        <dd>@user.Email <span class="badge">@(user.EmailVerified ? "verified" : "not verified")</span></dd>
+        <dd>@user.Email <span class="badge @(user.EmailVerified ? "badge-ok" : "badge-warn")">@(user.EmailVerified ? "verified" : "not verified")</span></dd>
     </dl>
 }
 

@@ -3,11 +3,13 @@
 @* The service sends the browser back with ?link_ticket=…; nothing is linked until the user presses "Link account". *@
 @if (ticket is not null)
 {
-    <section aria-labelledby="confirm-h" class="secret">
+    <section aria-labelledby="confirm-h" class="decision">
         <h2 id="confirm-h">Link the account you just signed in to?</h2>
         <p>It will be able to sign in to this account from now on.</p>
-        <button type="button" disabled="@busy" aria-busy="@(busy ? "true" : null)" @onclick="Confirm">Link account</button>
-        <button type="button" disabled="@busy" @onclick="Cancel">Cancel</button>
+        <p class="form-actions">
+            <button type="button" class="btn-primary" disabled="@busy" aria-busy="@(busy ? "true" : null)" @onclick="Confirm">Link account</button>
+            <button type="button" disabled="@busy" @onclick="Cancel">Cancel</button>
+        </p>
     </section>
 }
 <div role="status">@result</div>

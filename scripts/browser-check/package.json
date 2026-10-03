@@ -1,0 +1,9 @@
+{
+  "name": "me-browser-check",
+  "private": true,
+  "type": "module",
+  "description": "Real-browser check of auth-web, driven through the installed Google Chrome (no browser download).",
+  "dependencies": {
+    "playwright-core": "^1.50.0"
+  }
+}

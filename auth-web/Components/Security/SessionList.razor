@@ -5,7 +5,7 @@
     <div role="status">@notice</div>
     <div role="alert" class="error">@error</div>
     @if (failed) { <LoadFailed What="your sessions" OnRetry="Load" /> }
-    else if (items is null) { <p>Loading…</p> }
+    else if (items is null) { <p class="loading">Loading…</p> }
     else
     {
         <table>
@@ -15,10 +15,10 @@
             @foreach (var s in items)
             {
                 <tr>
-                    <th scope="row">@Short(s.UserAgent)@if (s.Current) { <text> </text><span class="badge">This device</span> }</th>
-                    <td>@s.Ip</td>
-                    <td><Time Value="s.LastSeen" /></td>
-                    <td>
+                    <th scope="row">@Short(s.UserAgent)@if (s.Current) { <text> </text><span class="badge badge-accent">This device</span> }</th>
+                    <td data-label="IP address">@s.Ip</td>
+                    <td data-label="Last seen"><Time Value="s.LastSeen" /></td>
+                    <td class="actions">
                         @if (!s.Current)
                         {
                             <button type="button" @onclick="() => AskRevoke(s)">Sign out<span class="visually-hidden"> session on @Short(s.UserAgent), last seen <Time Value="s.LastSeen" /></span></button>
@@ -28,7 +28,7 @@
             }
             </tbody>
         </table>
-        @if (!others.Any()) { <p>No other sessions.</p> }
+        @if (!others.Any()) { <p class="muted">No other sessions.</p> }
         else { <p><button type="button" @onclick="AskRevokeAll">Sign out everywhere else</button></p> }
     }
 </section>

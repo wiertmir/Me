@@ -12,17 +12,19 @@
 }
 
 <h2>Create a user</h2>
-<form @onsubmit="Create" @onsubmit:preventDefault>
+<form class="form-row" @onsubmit="Create" @onsubmit:preventDefault>
     <p><label for="new-username">Username</label><input id="new-username" @bind="username" required autocomplete="off" /></p>
     <p><label for="new-email">Email</label><input id="new-email" type="email" @bind="email" required autocomplete="off" /></p>
     <p><label for="new-display">Display name (optional)</label><input id="new-display" @bind="displayName" maxlength="64" autocomplete="off" /></p>
-    <button type="submit">Create user</button>
-    <span role="alert" class="error">@createError</span>
+    <div class="form-actions">
+        <button type="submit">Create user</button>
+        <span role="alert" class="error">@createError</span>
+    </div>
 </form>
 
 <h2>All users</h2>
 @if (failed) { <LoadFailed What="the users" OnRetry="Load" /> }
-else if (users is null) { <p>Loading…</p> }
+else if (users is null) { <p class="loading">Loading…</p> }
 else
 {
     <table>
@@ -30,8 +32,7 @@ else
         <thead>
             <tr>
                 <th scope="col">Username</th><th scope="col">Display name</th><th scope="col">Email</th>
-                <th scope="col">Verified</th><th scope="col">Admin</th><th scope="col">Disabled</th>
-                <th scope="col">Created</th><th scope="col">Actions</th>
+                <th scope="col">Status</th><th scope="col">Created</th><th scope="col">Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -39,13 +40,18 @@ else
         {
             <tr>
                 <th scope="row">@u.Username</th>
-                <td>@u.DisplayName</td>
-                <td>@u.Email</td>
-                <td>@Yes(u.EmailVerified)</td>
-                <td>@Yes(u.IsAdmin)</td>
-                <td>@Yes(u.Disabled)</td>
-                <td><Time Value="u.CreatedAt" /></td>
-                <td>
+                <td data-label="Display name">@u.DisplayName</td>
+                <td data-label="Email" class="wrap">@u.Email</td>
+                <td data-label="Status">
+                    <span class="badges">
+                        <span class="badge @(u.EmailVerified ? "badge-ok" : "badge-warn")">@(u.EmailVerified ? "Verified" : "Not verified")</span>
+                        @if (u.IsAdmin) { <span class="badge badge-accent">Admin</span> }
+                        @if (u.Disabled) { <span class="badge badge-danger">Disabled</span> }
+                    </span>
+                </td>
+                <td data-label="Created"><Time Value="u.CreatedAt" /></td>
+                <td class="actions">
+                    <div class="actions-inner">
                     @if (u.Disabled)
                     {
                         <button type="button" @onclick="() => Patch(u, false, null)">Enable<span class="visually-hidden"> user @u.Username</span></button>
@@ -64,6 +70,7 @@ else
                     }
                     <button type="button" @onclick="() => AskReset(u)">Reset password<span class="visually-hidden"> for @u.Username</span></button>
                     @if (rowErrors.TryGetValue(u.Id, out var msg)) { <span role="alert" class="error">@msg</span> }
+                    </div>
                 </td>
             </tr>
         }
@@ -80,8 +87,6 @@ else
     private string? createError, secret, secretFor;
     private readonly Dictionary<Guid, string> rowErrors = new();
     private ConfirmRequest? pending;
-
-    private static string Yes(bool b) => b ? "Yes" : "No";
 
     protected override Task OnInitializedAsync() => Load();
 

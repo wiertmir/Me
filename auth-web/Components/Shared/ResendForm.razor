@@ -7,8 +7,7 @@
         <input id="resend-email" name="Input.Email" type="email" value="@Input?.Email" autocomplete="email" required />
     </p>
     <button type="submit">Resend email</button>
-    <div role="status">@if (sent) { <p>If that address needs verifying, we've sent a new link.</p> }
-        @if (error is not null) { <p class="error">@error</p> }</div>
+    <div role="status">@if (sent) { <p>If that address needs verifying, we've sent a new link.</p> }@if (error is not null) { <p class="error">@error</p> }</div>
 </form>
 
 @code {
