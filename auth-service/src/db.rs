@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS identities (
     provider TEXT NOT NULL CHECK (provider IN ('google', 'github', 'microsoft')),
     provider_subject TEXT NOT NULL,
     email TEXT,
-    UNIQUE (provider, provider_subject)
+    created_at INTEGER NOT NULL,
+    UNIQUE (provider, provider_subject),
+    UNIQUE (user_id, provider)
 );
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT NOT NULL UNIQUE,
@@ -86,6 +88,26 @@ CREATE TABLE IF NOT EXISTS email_tokens (
     purpose TEXT NOT NULL CHECK (purpose IN ('verify', 'reset')),
     expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS social_states (
+    state_hash TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    pkce_verifier TEXT NOT NULL,
+    challenge TEXT,
+    link_user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS social_link_intents (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS social_tickets (
+    ticket_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    challenge TEXT,
+    expires_at INTEGER NOT NULL
+);
 ";
 
 impl Db {
@@ -135,7 +157,7 @@ mod tests {
                 )
             })
             .unwrap();
-        assert_eq!(n, 8);
+        assert_eq!(n, 11);
         let fk: i64 = db
             .with(|c| c.query_row("PRAGMA foreign_keys", [], |r| r.get(0)))
             .unwrap();

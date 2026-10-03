@@ -68,6 +68,12 @@ fn default_smtp_port() -> u16 {
 pub struct ProviderConfig {
     pub client_id: String,
     pub client_secret: String,
+    // Endpoint overrides, for tests that point a provider at a stub.
+    pub auth_url: Option<String>,
+    pub token_url: Option<String>,
+    pub userinfo_url: Option<String>,
+    /// GitHub only: the `/user/emails` endpoint.
+    pub emails_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

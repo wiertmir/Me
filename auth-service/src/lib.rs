@@ -6,9 +6,11 @@ pub mod logging;
 pub mod mail;
 pub mod oauth_store;
 pub mod openapi;
+pub mod providers;
 pub mod ratelimit;
 pub mod routes;
 pub mod sessions;
+pub mod social_store;
 pub mod tokens;
 pub mod users;
 
@@ -35,6 +37,8 @@ pub struct AppState {
     pub hashing: Arc<tokio::sync::Semaphore>,
     pub mail: mail::Mailer,
     pub signer: Arc<tokens::Signer>,
+    /// Outbound calls to identity providers.
+    pub http: reqwest::Client,
 }
 
 /// Opens the database under `cfg.data_dir`. Returns the one-time seed password when a user was seeded.
@@ -62,6 +66,10 @@ pub fn build_state(cfg: Config) -> anyhow::Result<(AppState, Option<String>)> {
             hashing: Arc::new(tokio::sync::Semaphore::new(HASH_PERMITS)),
             mail,
             signer,
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
         },
         seed_password,
     ))

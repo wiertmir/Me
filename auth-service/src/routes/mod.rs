@@ -4,6 +4,7 @@ pub mod auth;
 pub mod oauth;
 pub mod oauth_token;
 pub mod signup;
+pub mod social;
 
 use axum::http::{HeaderMap, StatusCode};
 use common::ApiError;
@@ -19,6 +20,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(admin::router())
         .merge(oauth::router())
         .merge(oauth_token::router())
+        .merge(social::router())
 }
 
 /// Client address and user agent, as forwarded by auth-web.

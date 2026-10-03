@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     sessions::{self, PendingUser, SessionInfo, SessionUser},
+    social_store::{self, Identity, Unlink},
     users::{self, User},
 };
 
@@ -20,6 +21,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_me, patch_me))
         .routes(routes!(list_sessions))
         .routes(routes!(revoke_session))
+        .routes(routes!(list_identities))
+        .routes(routes!(unlink_identity))
 }
 
 /// The signed-in user. Also available while a password change is pending.
@@ -91,4 +94,44 @@ async fn revoke_session(
     }
     tracing::info!(event = "session_revoked", user_id = %me.user.id, session_id = %id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The caller's linked social identities.
+#[utoipa::path(get, path = "/api/me/identities", responses(
+    (status = 200, body = Vec<Identity>),
+    (status = 401, body = ErrorBody),
+    (status = 403, body = ErrorBody),
+))]
+async fn list_identities(
+    State(s): State<AppState>,
+    me: SessionUser,
+) -> Result<Json<Vec<Identity>>, ApiError> {
+    Ok(Json(social_store::list_identities(&s.db, me.user.id)?))
+}
+
+/// Unlinks a provider, unless it is the caller's only way to sign in.
+#[utoipa::path(delete, path = "/api/me/identities/{provider}", params(("provider" = String, Path)), responses(
+    (status = 204),
+    (status = 401, body = ErrorBody),
+    (status = 403, body = ErrorBody),
+    (status = 404, description = "not_found (not linked)", body = ErrorBody),
+    (status = 409, description = "last_sign_in_method", body = ErrorBody),
+))]
+async fn unlink_identity(
+    State(s): State<AppState>,
+    me: SessionUser,
+    Path(provider): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    match social_store::unlink(&s.db, me.user.id, &provider)? {
+        Unlink::NotLinked => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "identity not linked",
+        )),
+        Unlink::LastMethod => Err(social_store::conflict()),
+        Unlink::Done => {
+            tracing::info!(event = "identity_unlinked", user_id = %me.user.id, provider = %provider);
+            Ok(StatusCode::NO_CONTENT)
+        }
+    }
 }
