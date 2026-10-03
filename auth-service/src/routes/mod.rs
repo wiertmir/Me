@@ -1,5 +1,6 @@
 pub mod account;
 pub mod admin;
+pub mod app_passwords;
 pub mod auth;
 pub mod oauth;
 pub mod oauth_token;
@@ -21,6 +22,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(oauth::router())
         .merge(oauth_token::router())
         .merge(social::router())
+        .merge(app_passwords::router())
 }
 
 /// Client address and user agent, as forwarded by auth-web.

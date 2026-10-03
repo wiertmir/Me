@@ -135,9 +135,8 @@ pub fn set_password(db: &Db, id: Uuid, pw: &str, must_change: bool) -> ApiResult
 
 /// Revokes everything that lets someone get into the account without the password. Clears, for the user:
 /// `sessions`, `refresh_tokens`, `auth_codes`, `social_tickets`, `social_link_tickets`,
-/// `social_link_intents`, link-flow `social_states`, and `reset` rows in `email_tokens`. Run inside the
-/// transaction that changes the password. EVERY new credential type (app passwords arrive in the next
-/// task) must be added here.
+/// `social_link_intents`, link-flow `social_states`, `app_passwords`, and `reset` rows in `email_tokens`.
+/// Run inside the transaction that changes the password. EVERY new credential type must be added here.
 fn revoke_sign_in_state(tx: &rusqlite::Connection, id: &str) -> rusqlite::Result<()> {
     for sql in [
         "DELETE FROM sessions WHERE user_id = ?1",
@@ -147,6 +146,7 @@ fn revoke_sign_in_state(tx: &rusqlite::Connection, id: &str) -> rusqlite::Result
         "DELETE FROM social_tickets WHERE user_id = ?1",
         "DELETE FROM social_link_tickets WHERE user_id = ?1",
         "DELETE FROM social_link_intents WHERE user_id = ?1",
+        "DELETE FROM app_passwords WHERE user_id = ?1",
         "DELETE FROM email_tokens WHERE user_id = ?1 AND purpose = 'reset'",
     ] {
         tx.execute(sql, [id])?;
@@ -286,6 +286,7 @@ pub fn update_flags(
         if dis {
             tx.execute("DELETE FROM sessions WHERE user_id = ?1", [&id])?;
             tx.execute("DELETE FROM refresh_tokens WHERE user_id = ?1", [&id])?;
+            tx.execute("DELETE FROM app_passwords WHERE user_id = ?1", [&id])?;
         }
         tx.commit()?;
         Ok(FlagsOutcome::Updated)

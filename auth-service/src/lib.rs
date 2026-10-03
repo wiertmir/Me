@@ -1,3 +1,4 @@
+pub mod app_password_store;
 pub mod config;
 pub mod crypto;
 pub mod db;

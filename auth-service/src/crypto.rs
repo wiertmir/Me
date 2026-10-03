@@ -69,6 +69,40 @@ pub fn temporary_password() -> String {
         .collect()
 }
 
+/// 16 lower-case letters from the OS CSPRNG (about 75 bits). Rejection sampling (bytes >= 208 are
+/// discarded) keeps the 26 letters free of modulo bias.
+pub fn app_password() -> String {
+    use rand::TryRng as _;
+    let mut out = String::with_capacity(16);
+    while out.len() < 16 {
+        let mut buf = [0u8; 32];
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut buf)
+            .expect("OS random source unavailable");
+        for b in buf.into_iter().filter(|b| *b < 208).take(16 - out.len()) {
+            out.push((b'a' + b % 26) as char);
+        }
+    }
+    out
+}
+
+/// `abcdefghijklmnop` becomes `abcd-efgh-ijkl-mnop`.
+pub fn format_app_password(raw: &str) -> String {
+    raw.as_bytes()
+        .chunks(4)
+        .map(|c| std::str::from_utf8(c).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Drops dashes and whitespace and lower-cases, so users may type the password any way they like.
+pub fn normalize_app_password(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '-' && !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 pub fn sha256_hex(s: &str) -> String {
     Sha256::digest(s.as_bytes())
         .iter()
