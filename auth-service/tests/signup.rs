@@ -181,3 +181,11 @@ async fn resend_sends_only_for_unverified_accounts_and_is_rate_limited() {
     }
     assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
 }
+
+#[tokio::test]
+async fn signup_rejects_display_name_style_and_control_chars_in_email() {
+    let app = TestApp::spawn().await;
+    for e in ["x<a@b.c>", "a@b.c>", "a\u{7}b@example.com", "a\tb@example.com"] {
+        assert_eq!(code(&signup(&app, "bob", e, PW).await), (422, Some("validation")), "{e:?}");
+    }
+}

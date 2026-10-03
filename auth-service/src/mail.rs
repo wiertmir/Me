@@ -50,7 +50,7 @@ impl Mailer {
             }
             Self::Smtp(smtp) => {
                 let (transport, from) = &**smtp;
-                let msg = Message::builder().from(from.clone()).to(email.to.parse()?).subject(email.subject).body(email.body)?;
+                let msg = Message::builder().from(from.clone()).to(Mailbox::new(None, email.to.parse::<lettre::Address>()?)).subject(email.subject).body(email.body)?;
                 transport.send(msg).await?;
                 Ok(())
             }
