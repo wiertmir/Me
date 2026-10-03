@@ -984,6 +984,17 @@ async fn reset_revokes_tickets_and_intents_issued_before_it() {
         u[u.find('?').unwrap()..].to_string()
     };
     let link_ticket = link_ticket_of(&link_flow(&app, &attacker, "google").await);
+    // A link-flow state started before the reset (intent -> start).
+    let (_, i2) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/social/link-intent",
+            Some(&attacker),
+            json!({"provider": "google"}),
+        )
+        .await;
+    let u2 = i2["start_url"].as_str().unwrap();
+    let (stale_cb, stale_cookie) = begin(&app, "google", &u2[u2.find('?').unwrap()..]).await;
 
     forgot_and_reset(&app, "victim@example.org", "brand new passphrase").await;
 
@@ -1008,6 +1019,15 @@ async fn reset_revokes_tickets_and_intents_issued_before_it() {
         (s, body["code"].as_str()),
         (StatusCode::BAD_REQUEST, Some("invalid_ticket"))
     );
+    // The stale link state cannot complete, and no link ticket results.
+    let r = callback(&app, &stale_cb, Some(&stale_cookie)).await;
+    assert_redirect(&r, "/signin?error=social_failed");
+    let tickets: i64 = app
+        .state
+        .db
+        .with(|c| c.query_row("SELECT count(*) FROM social_link_tickets", [], |r| r.get(0)))
+        .unwrap();
+    assert_eq!(tickets, 0);
     // The attacker's old session is gone too.
     let (s, _) = app
         .api(
@@ -1061,4 +1081,40 @@ async fn no_verification_mail_for_passwordless_account() {
         (StatusCode::BAD_REQUEST, Some("invalid_token"))
     );
     assert!(!users::get(&app.state.db, id).unwrap().email_verified);
+}
+
+#[tokio::test]
+async fn reset_invalidates_authorization_codes_issued_before_it() {
+    let app = TestApp::spawn_with_mail().await;
+    let id = make_user(&app, "alice", "alice@example.org", true, true);
+    let session = password_session(&app, "alice").await;
+    let (code, verifier) = app
+        .auth_code(&session, "openid", "http://127.0.0.1/callback", None)
+        .await;
+    forgot_and_reset(&app, "alice@example.org", "brand new passphrase").await;
+    let (s, _, b) = app
+        .token_post(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", "test-client"),
+            ("code", &code),
+            ("redirect_uri", "http://127.0.0.1/callback"),
+            ("code_verifier", &verifier),
+        ])
+        .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant"))
+    );
+    let n: i64 = app
+        .state
+        .db
+        .with(|c| {
+            c.query_row(
+                "SELECT count(*) FROM refresh_tokens WHERE user_id = ?1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(n, 0);
 }

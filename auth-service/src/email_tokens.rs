@@ -74,13 +74,3 @@ pub fn consume(db: &Db, token: &str, purpose: Purpose) -> ApiResult<Option<Uuid>
         .filter(|(_, exp)| *exp > Utc::now().timestamp())
         .and_then(|(u, _)| Uuid::parse_str(&u).ok()))
 }
-
-pub fn delete_for_user(db: &Db, user: Uuid, purpose: Purpose) -> ApiResult<()> {
-    db.with(|c| {
-        c.execute(
-            "DELETE FROM email_tokens WHERE user_id = ?1 AND purpose = ?2",
-            params![user.to_string(), purpose.name()],
-        )
-    })?;
-    Ok(())
-}

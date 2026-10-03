@@ -133,14 +133,17 @@ pub fn set_password(db: &Db, id: Uuid, pw: &str, must_change: bool) -> ApiResult
     Ok(())
 }
 
-/// Revokes everything that lets someone get into the account without the password: sessions, refresh
-/// tokens, social tickets and link intents, and outstanding reset tokens. Run inside the transaction
-/// that changes the password. EVERY future credential type (app passwords arrive in the next task) must
-/// be added here.
+/// Revokes everything that lets someone get into the account without the password. Clears, for the user:
+/// `sessions`, `refresh_tokens`, `auth_codes`, `social_tickets`, `social_link_tickets`,
+/// `social_link_intents`, link-flow `social_states`, and `reset` rows in `email_tokens`. Run inside the
+/// transaction that changes the password. EVERY new credential type (app passwords arrive in the next
+/// task) must be added here.
 fn revoke_sign_in_state(tx: &rusqlite::Connection, id: &str) -> rusqlite::Result<()> {
     for sql in [
         "DELETE FROM sessions WHERE user_id = ?1",
         "DELETE FROM refresh_tokens WHERE user_id = ?1",
+        "DELETE FROM auth_codes WHERE user_id = ?1",
+        "DELETE FROM social_states WHERE link_user_id = ?1",
         "DELETE FROM social_tickets WHERE user_id = ?1",
         "DELETE FROM social_link_tickets WHERE user_id = ?1",
         "DELETE FROM social_link_intents WHERE user_id = ?1",
@@ -289,8 +292,8 @@ pub fn update_flags(
     })
 }
 
-/// Admin reset: sets the (already hashed) temporary password, forces a change, and revokes the user's
-/// sessions, refresh tokens and outstanding reset tokens. False when the user does not exist.
+/// Admin reset: sets the (already hashed) temporary password, forces a change, and clears
+/// everything `revoke_sign_in_state` clears. False when the user does not exist.
 pub fn admin_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<bool> {
     let id = id.to_string();
     let purged = db.with(|c| {
