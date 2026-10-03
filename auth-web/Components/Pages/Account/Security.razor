@@ -1,0 +1,40 @@
+@page "/account/security"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using AuthWeb.Components.Security
+@inject NavigationManager Nav
+
+<PageTitle>Security</PageTitle>
+<h1>Security</h1>
+
+<div role="status">@urlNotice</div>
+<LinkConfirm OnLinked="() => linked?.Reload() ?? Task.CompletedTask" />
+
+<LinkedMethods @ref="linked" />
+
+<section aria-labelledby="password-h">
+    <h2 id="password-h">Password</h2>
+    <p><a href="/change-password?returnUrl=/account/security%3Fnotice%3Dpassword">Change password</a></p>
+</section>
+
+<SessionList />
+
+@code {
+    private LinkedMethods? linked;
+    private string? urlNotice;
+
+    // ?linked= and ?error= come from the service; they only pick one of these fixed texts and are never shown.
+    protected override void OnInitialized()
+    {
+        var q = System.Web.HttpUtility.ParseQueryString(new Uri(Nav.Uri).Query);
+        if (q["notice"] == "password") urlNotice = "Password changed.";
+        else if (!string.IsNullOrEmpty(q["linked"])) urlNotice = "Account linked.";
+        else if (q["error"] is { Length: > 0 } e)
+            urlNotice = e switch
+            {
+                "identity_in_use" => "That account is already linked to another user.",
+                "social_failed" => "Linking failed. Try again.",
+                _ => "Something went wrong. Try again.",
+            };
+    }
+}

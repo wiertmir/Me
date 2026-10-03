@@ -24,7 +24,8 @@ public sealed class RequestIdMiddleware(RequestDelegate next)
 
 public sealed class SecurityHeadersMiddleware(RequestDelegate next)
 {
-    private static readonly string[] NoStorePaths = ["/signin", "/change-password", "/account", "/signup", "/verify", "/forgot", "/reset", "/social/complete", "/session-expired"];
+    private static readonly string[] NoStorePaths = ["/signin", "/change-password", "/signup", "/verify", "/forgot", "/reset", "/social/complete", "/session-expired"];
+    private static readonly string[] NoStorePrefixes = ["/account", "/admin"];
 
     // form-action is deliberately absent: Chrome applies it to redirects, and sign-in redirects to the client's callback.
     private const string Csp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
@@ -40,7 +41,8 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
             h["X-Frame-Options"] = "DENY";
             h["Content-Security-Policy"] = Csp;
             var path = ctx.Request.Path;
-            if (NoStorePaths.Any(p => path.Equals(p, StringComparison.OrdinalIgnoreCase)))
+            if (NoStorePaths.Any(p => path.Equals(p, StringComparison.OrdinalIgnoreCase))
+                || NoStorePrefixes.Any(p => path.StartsWithSegments(p, StringComparison.OrdinalIgnoreCase)))
                 h.CacheControl = "no-store";
             return Task.CompletedTask;
         });

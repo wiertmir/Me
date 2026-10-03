@@ -9,3 +9,16 @@ dt { font-weight: 600; }
 dd { margin: 0 0 .75rem; }
 
 #blazor-error-ui { display: none; position: fixed; bottom: 0; left: 0; right: 0; padding: .75rem 1rem; background: #ffffe0; }
+
+nav { display: flex; flex-wrap: wrap; gap: 1rem; padding: .75rem 1rem; border-bottom: 1px solid #ccc; }
+nav a[aria-current="page"] { font-weight: 600; }
+table { border-collapse: collapse; width: 100%; }
+caption { text-align: left; font-weight: 600; padding: .5rem 0; }
+th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+.secret { border: 2px solid #b00020; padding: 1rem; margin: 1rem 0; }
+.secret code { display: block; font-size: 1.1em; word-break: break-all; padding: .5rem; background: #f4f4f4; user-select: all; }
+.badge { font-size: .85em; padding: 0 .4em; border: 1px solid currentColor; border-radius: .25em; }
+dialog { max-width: 28rem; }
+dialog::backdrop { background: rgb(0 0 0 / .5); }
+button + button { margin-left: .5rem; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

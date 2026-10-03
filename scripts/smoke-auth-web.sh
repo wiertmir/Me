@@ -317,6 +317,46 @@ for secret in "$VTOK" "$RTOK" "$TICKET" "$PW1" "$PW2" "$PW3" "$NEWPW"; do
 done
 check "S9 no token, ticket or password in either process's log" $leak
 
+echo "== account and admin pages"
+start_svc acct ""
+SEED2=$(grep -o '"one_time_password":"[^"]*"' "$T/svc-acct.log" | head -1 | cut -d'"' -f4)
+M="$T/m.jar"; N="$T/n.jar"; U="$T/u.jar"
+form_post "$M" "$WEB/signup" signup $(SIGNUP_FIELDS dave dave@example.test "$PW1")
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "A0a non-admin user dave signed up and signed in" $? "$CODE $LOC"
+form_post "$N" "$WEB/signin" signin --data-urlencode "Input.Login=wiertmir" --data-urlencode "Input.Password=$SEED2"
+form_post "$N" "$WEB/change-password?returnUrl=/account/security%3Fnotice%3Dpassword" change-password \
+  --data-urlencode "Input.Current=$SEED2" --data-urlencode "Input.New=$PW1" --data-urlencode "Input.Confirm=$PW1"
+[ "$CODE" = 302 ] && [ "$LOC" = "/account/security?notice=password" ]; check "A0b change-password with a local returnUrl returns there" $? "$CODE $LOC"
+form_post "$N" "$WEB/change-password?returnUrl=//evil.example" change-password \
+  --data-urlencode "Input.Current=$PW1" --data-urlencode "Input.New=$PW2" --data-urlencode "Input.Confirm=$PW2"
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "A0c change-password with returnUrl=//evil.example goes to /account instead" $? "$CODE $LOC"
+
+# a standalone 43-character base64url run (Blazor's own markers are longer standard-base64 strings with + / =)
+B64RUN='(^|[^A-Za-z0-9_+/=\\-])[A-Za-z0-9_-]{43}([^A-Za-z0-9_+/=\\-]|$)'
+token_like() { grep -Eo -- ".{0,30}$B64RUN.{0,10}" "$T/body" | head -2 | tr '\n' ' '; }
+for pair in "/account:Profile" "/account/security:Security" "/account/app-passwords:App passwords"; do
+  path=${pair%%:*}; head=${pair#*:}
+  req "$M" "$WEB$path"
+  [ "$CODE" = 200 ] && grep -q "<h1>$head</h1>" "$T/body"; check "A1 $path: 200 with the '$head' heading" $? "$CODE"
+  grep -Eqi '^cache-control: .*no-store' "$T/hdr"; check "A2 $path carries Cache-Control: no-store" $?
+  # the session token is a 43-character base64url string: none may appear in the HTML (antiforgery fields are not on these pages)
+  grep -Eq "$B64RUN" "$T/body"; [ $? -ne 0 ]; check "A3 $path HTML holds no 43-character token-like string" $? "$(token_like)"
+  req "$U" "$WEB$path"
+  [ "$CODE" = 302 ] && [[ "$LOC" == "/signin?returnUrl=%2F"* ]]; check "A4 unauthenticated $path redirects to /signin with a local returnUrl" $? "$CODE $LOC"
+done
+req "$M" "$WEB/admin/users"
+[ "$CODE" = 403 ] && grep -q "Not authorised" "$T/body" && ! grep -q "<h1>Users</h1>" "$T/body"; check "A5 non-admin /admin/users: 403 'Not authorised'" $? "$CODE"
+req "$N" "$WEB/admin/users"
+[ "$CODE" = 200 ] && grep -q "<h1>Users</h1>" "$T/body"; check "A6 admin /admin/users: 200" $? "$CODE"
+grep -Eqi '^cache-control: .*no-store' "$T/hdr"; check "A7 /admin/users carries Cache-Control: no-store" $?
+grep -Eq "$B64RUN" "$T/body"; [ $? -ne 0 ]; check "A8 /admin/users HTML holds no 43-character token-like string" $? "$(token_like)"
+req "$U" "$WEB/admin/users"
+[ "$CODE" = 302 ] && [[ "$LOC" == "/signin?returnUrl="* ]]; check "A9 unauthenticated /admin/users redirects to /signin" $? "$CODE $LOC"
+req "$M" "$WEB/account"
+grep -q 'href="/admin/users"' "$T/body"; [ $? -ne 0 ]; check "A10 non-admin navigation has no Users link" $?
+req "$N" "$WEB/account"
+grep -q 'href="/admin/users"' "$T/body"; check "A11 admin navigation has the Users link" $?
+
 echo
 if [ "$FAILS" -eq 0 ]; then echo "ALL PASSED"; else echo "$FAILS FAILED"; echo "--- web log tail"; tail -15 "$T/web.log"; fi
 exit "$FAILS"

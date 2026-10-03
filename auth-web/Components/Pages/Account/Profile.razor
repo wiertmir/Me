@@ -1,0 +1,60 @@
+@page "/account"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inherits ApiComponent
+
+<PageTitle>Profile</PageTitle>
+<h1>Profile</h1>
+
+@if (failed) { <LoadFailed What="your profile" OnRetry="Load" /> }
+else if (user is null) { <p>Loading…</p> }
+else
+{
+    <form @onsubmit="Save" @onsubmit:preventDefault>
+        <p>
+            <label for="display-name">Display name</label>
+            <input id="display-name" @bind="displayName" maxlength="64" required autocomplete="name"
+                   aria-describedby="@(nameError is null ? "name-hint" : "name-hint name-error")" />
+            <span id="name-hint" class="hint">1 to 64 characters.</span>
+            @if (nameError is not null) { <span id="name-error" class="error" role="alert">@nameError</span> }
+        </p>
+        <button type="submit">Save display name</button>
+        <span role="status">@saved</span>
+    </form>
+
+    <h2>Sign-in details</h2>
+    <dl>
+        <dt>Username</dt><dd>@user.Username</dd>
+        <dt>Email</dt>
+        <dd>@user.Email <span class="badge">@(user.EmailVerified ? "verified" : "not verified")</span></dd>
+    </dl>
+}
+
+@code {
+    private User? user;
+    private string displayName = "";
+    private string? nameError, saved;
+    private bool failed;
+
+    protected override Task OnInitializedAsync() => Load();
+
+    private async Task Load()
+    {
+        failed = false;
+        var r = await Call(t => Api.Me(t));
+        if (r is null) return;
+        if (r.Ok) { user = r.Value; displayName = user!.DisplayName; } else failed = true;
+    }
+
+    private async Task Save()
+    {
+        saved = null;
+        var name = displayName.Trim();
+        if (name.Length is < 1 or > 64) { nameError = "Enter a display name of 1 to 64 characters."; return; }
+        nameError = null;
+        var r = await Call(t => Api.UpdateDisplayName(t, name));
+        if (r is null) return;
+        if (r.Ok) { user = r.Value; displayName = user!.DisplayName; saved = "Saved."; }
+        else nameError = r.Code == "validation" ? r.Message : Describe(r);
+    }
+}

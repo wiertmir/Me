@@ -1,0 +1,46 @@
+@inherits ApiComponent
+
+@* The service sends the browser back with ?link_ticket=…; nothing is linked until the user presses "Link account". *@
+@if (ticket is not null)
+{
+    <section aria-labelledby="confirm-h" class="secret">
+        <h2 id="confirm-h">Link the account you just signed in to?</h2>
+        <p>It will be able to sign in to this account from now on.</p>
+        <button type="button" @onclick="Confirm">Link account</button>
+        <button type="button" @onclick="Cancel">Cancel</button>
+    </section>
+}
+<div role="status">@result</div>
+
+@code {
+    [Parameter] public EventCallback OnLinked { get; set; }
+
+    private string? ticket, result;
+
+    protected override void OnInitialized() =>
+        ticket = System.Web.HttpUtility.ParseQueryString(new Uri(Nav.Uri).Query)["link_ticket"] is { Length: > 0 } t ? t : null;
+
+    private void Leave()
+    {
+        ticket = null;
+        Nav.NavigateTo("/account/security", replace: true); // the ticket must not stay in the URL
+    }
+
+    private void Cancel() => Leave();
+
+    private async Task Confirm()
+    {
+        var t = ticket!;
+        var r = await Call(s => Api.ConfirmLink(s, t));
+        if (r is null) return;
+        result = r.Ok ? "Account linked." : r.Code switch
+        {
+            "forbidden" => "That link was started from a different account, so nothing was changed.",
+            "identity_in_use" => "That account is already linked to another user.",
+            "invalid_ticket" => "That link request expired. Try again.",
+            _ => Describe(r),
+        };
+        Leave();
+        if (r.Ok) await OnLinked.InvokeAsync();
+    }
+}

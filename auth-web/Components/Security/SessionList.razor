@@ -1,0 +1,76 @@
+@inherits ApiComponent
+
+<section aria-labelledby="sessions-h">
+    <h2 id="sessions-h">Sessions</h2>
+    <div role="status">@notice</div>
+    <div role="alert" class="error">@error</div>
+    @if (failed) { <LoadFailed What="your sessions" OnRetry="Load" /> }
+    else if (items is null) { <p>Loading…</p> }
+    else
+    {
+        <table>
+            <caption>Where you are signed in</caption>
+            <thead><tr><th scope="col">Device</th><th scope="col">IP address</th><th scope="col">Last seen</th><th scope="col">Actions</th></tr></thead>
+            <tbody>
+            @foreach (var s in items)
+            {
+                <tr>
+                    <th scope="row">@Short(s.UserAgent)@if (s.Current) { <text> </text><span class="badge">This device</span> }</th>
+                    <td>@s.Ip</td>
+                    <td><Time Value="s.LastSeen" /></td>
+                    <td>
+                        @if (!s.Current)
+                        {
+                            <button type="button" @onclick="() => AskRevoke(s)">Sign out<span class="visually-hidden"> session on @Short(s.UserAgent), last seen <Time Value="s.LastSeen" /></span></button>
+                        }
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+        @if (!others.Any()) { <p>No other sessions.</p> }
+        else { <p><button type="button" @onclick="AskRevokeAll">Sign out everywhere else</button></p> }
+    }
+</section>
+
+<ConfirmDialog Request="pending" OnDone="() => pending = null" />
+
+@code {
+    private List<SessionInfo>? items;
+    private bool failed;
+    private string? notice, error;
+    private ConfirmRequest? pending;
+
+    private IEnumerable<SessionInfo> others => items?.Where(s => !s.Current) ?? [];
+
+    protected override Task OnInitializedAsync() => Load();
+
+    private static string Short(string ua) => string.IsNullOrWhiteSpace(ua) ? "Unknown device" : ua.Length > 50 ? ua[..50] + "…" : ua;
+
+    private async Task Load()
+    {
+        failed = false;
+        var r = await Call(t => Api.Sessions(t));
+        if (r is null) return;
+        if (r.Ok) items = r.Value; else failed = true;
+    }
+
+    private void AskRevoke(SessionInfo s) =>
+        pending = new($"Sign out the session on {Short(s.UserAgent)} ({s.Ip})?", "Sign out", () => Revoke([s]));
+
+    private void AskRevokeAll() =>
+        pending = new("Sign out of every other session? This device stays signed in.", "Sign out everywhere else", () => Revoke(others.ToList()));
+
+    private async Task Revoke(List<SessionInfo> targets)
+    {
+        notice = error = null;
+        foreach (var s in targets)
+        {
+            var r = await Call(t => Api.RevokeSession(t, s.Id));
+            if (r is null) return;
+            if (!r.Ok && r.Code != "not_found") { error = Describe(r); break; }
+        }
+        if (error is null) notice = targets.Count == 1 ? "Session signed out." : "Signed out everywhere else.";
+        await Load();
+    }
+}

@@ -1,5 +1,17 @@
 @inherits LayoutComponentBase
 
+<AuthorizeView>
+    <Authorized>
+        <nav aria-label="Account">
+            <a href="/account">Profile</a>
+            <a href="/account/security">Security</a>
+            <a href="/account/app-passwords">App passwords</a>
+            <AuthorizeView Roles="admin" Context="admin"><a href="/admin/users">Users</a></AuthorizeView>
+            <a href="/signout">Sign out</a>
+        </nav>
+    </Authorized>
+</AuthorizeView>
+
 <main>
     @Body
 </main>

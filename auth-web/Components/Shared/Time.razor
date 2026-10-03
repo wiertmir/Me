@@ -1,0 +1,9 @@
+@if (Value is { } v)
+{
+    <time datetime="@v.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", Inv)">@v.UtcDateTime.ToString("yyyy-MM-dd HH:mm 'UTC'", Inv)</time>
+}
+
+@code {
+    private static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
+    [Parameter] public DateTimeOffset? Value { get; set; }
+}

@@ -1,0 +1,9 @@
+<div role="alert">
+    <p class="error">Couldn't load @What.</p>
+    <button type="button" @onclick="OnRetry">Try again</button>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string What { get; set; } = "";
+    [Parameter] public EventCallback OnRetry { get; set; }
+}

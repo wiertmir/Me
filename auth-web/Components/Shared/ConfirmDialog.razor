@@ -1,0 +1,58 @@
+@inject IJSRuntime JS
+
+@* Native <dialog>: showModal() (via clipboard.js) gives the focus trap, Escape and focus return to the trigger. *@
+@if (Request is { } r)
+{
+    <dialog id="@id" aria-labelledby="@(id)-text" @onclose="Closed">
+        <p id="@(id)-text">@r.Message</p>
+        <button type="button" autofocus @onclick="Cancel">Cancel</button>
+        <button type="button" @onclick="Confirm">@r.ConfirmText</button>
+    </dialog>
+}
+
+@code {
+    [Parameter] public ConfirmRequest? Request { get; set; }
+    [Parameter] public EventCallback OnDone { get; set; }
+
+    private readonly string id = "dlg-" + Guid.NewGuid().ToString("N");
+    private bool shown;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Request is not null && !shown)
+        {
+            shown = true;
+            await JS.InvokeVoidAsync("meUi.open", id);
+        }
+        else if (Request is null) shown = false;
+    }
+
+    private async Task Cancel()
+    {
+        await Close();
+        await OnDone.InvokeAsync();
+    }
+
+    private async Task Confirm()
+    {
+        var action = Request!.Action;
+        await Close();
+        await OnDone.InvokeAsync();
+        await action();
+    }
+
+    // Close first (focus goes back to the button that opened it), and mark it closed so the event it fires is ignored.
+    private async Task Close()
+    {
+        shown = false;
+        await JS.InvokeVoidAsync("meUi.close", id);
+    }
+
+    // Escape closes a modal dialog natively; treat that as Cancel.
+    private async Task Closed()
+    {
+        if (!shown) return;
+        shown = false;
+        await OnDone.InvokeAsync();
+    }
+}

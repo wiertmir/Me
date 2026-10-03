@@ -40,6 +40,13 @@ public static class Startup
                 o.SlidingExpiration = false; // the service's session is what expires
                 o.LoginPath = "/signin";
                 o.ReturnUrlParameter = "returnUrl";
+                // Signed in but not allowed (e.g. /admin/users for a non-admin): a real 403, which the status-code
+                // page turns into "Not authorised", not a redirect to a login-style page.
+                o.Events.OnRedirectToAccessDenied = ctx =>
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    return Task.CompletedTask;
+                };
             });
         services.AddAuthorization();
         services.AddAntiforgery(o => o.Cookie.SecurePolicy = secure);

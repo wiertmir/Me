@@ -1,0 +1,145 @@
+@page "/admin/users"
+@rendermode InteractiveServer
+@attribute [Authorize(Roles = "admin")]
+@inherits ApiComponent
+
+<PageTitle>Users</PageTitle>
+<h1>Users</h1>
+
+@if (secret is not null)
+{
+    <SecretPanel Title="@($"Temporary password for {secretFor}")" Secret="@secret" OnDismiss="Dismiss" />
+}
+
+<h2>Create a user</h2>
+<form @onsubmit="Create" @onsubmit:preventDefault>
+    <p><label for="new-username">Username</label><input id="new-username" @bind="username" required autocomplete="off" /></p>
+    <p><label for="new-email">Email</label><input id="new-email" type="email" @bind="email" required autocomplete="off" /></p>
+    <p><label for="new-display">Display name (optional)</label><input id="new-display" @bind="displayName" maxlength="64" autocomplete="off" /></p>
+    <button type="submit">Create user</button>
+    <span role="alert" class="error">@createError</span>
+</form>
+
+<h2>All users</h2>
+@if (failed) { <LoadFailed What="the users" OnRetry="Load" /> }
+else if (users is null) { <p>Loading…</p> }
+else
+{
+    <table>
+        <caption>Users</caption>
+        <thead>
+            <tr>
+                <th scope="col">Username</th><th scope="col">Display name</th><th scope="col">Email</th>
+                <th scope="col">Verified</th><th scope="col">Admin</th><th scope="col">Disabled</th>
+                <th scope="col">Created</th><th scope="col">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var u in users)
+        {
+            <tr>
+                <th scope="row">@u.Username</th>
+                <td>@u.DisplayName</td>
+                <td>@u.Email</td>
+                <td>@Yes(u.EmailVerified)</td>
+                <td>@Yes(u.IsAdmin)</td>
+                <td>@Yes(u.Disabled)</td>
+                <td><Time Value="u.CreatedAt" /></td>
+                <td>
+                    @if (u.Disabled)
+                    {
+                        <button type="button" @onclick="() => Patch(u, false, null)">Enable<span class="visually-hidden"> user @u.Username</span></button>
+                    }
+                    else
+                    {
+                        <button type="button" @onclick="() => AskDisable(u)">Disable<span class="visually-hidden"> user @u.Username</span></button>
+                    }
+                    @if (u.IsAdmin)
+                    {
+                        <button type="button" @onclick="() => AskRemoveAdmin(u)">Remove admin<span class="visually-hidden"> from @u.Username</span></button>
+                    }
+                    else
+                    {
+                        <button type="button" @onclick="() => Patch(u, null, true)">Make admin<span class="visually-hidden"> @u.Username</span></button>
+                    }
+                    <button type="button" @onclick="() => AskReset(u)">Reset password<span class="visually-hidden"> for @u.Username</span></button>
+                    @if (rowErrors.TryGetValue(u.Id, out var msg)) { <span role="alert" class="error">@msg</span> }
+                </td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+<ConfirmDialog Request="pending" OnDone="() => pending = null" />
+
+@code {
+    private List<User>? users;
+    private bool failed;
+    private string username = "", email = "", displayName = "";
+    private string? createError, secret, secretFor;
+    private readonly Dictionary<Guid, string> rowErrors = new();
+    private ConfirmRequest? pending;
+
+    private static string Yes(bool b) => b ? "Yes" : "No";
+
+    protected override Task OnInitializedAsync() => Load();
+
+    private async Task Load()
+    {
+        failed = false;
+        var r = await Call(t => Api.AdminUsers(t));
+        if (r is null) return;
+        if (r.Ok) users = r.Value; else failed = true;
+    }
+
+    private void Dismiss() { secret = null; secretFor = null; }
+
+    private void AskDisable(User u) =>
+        pending = new($"Disable {u.Username}? They will be signed out and unable to sign in.", "Disable", () => Patch(u, true, null));
+
+    private void AskRemoveAdmin(User u) =>
+        pending = new($"Remove admin rights from {u.Username}?", "Remove admin", () => Patch(u, null, false));
+
+    private void AskReset(User u) =>
+        pending = new($"Reset the password of {u.Username}? Their current password stops working and they get a temporary one.", "Reset password", () => Reset(u));
+
+    private static string Explain(ApiResult r) => r.Code switch
+    {
+        "last_admin" => "You can't remove or disable the last administrator.",
+        "conflict" => "That username or email is already in use.",
+        "validation" => r.Message ?? "That value is not valid.",
+        _ => Describe(r),
+    };
+
+    private async Task Create()
+    {
+        createError = null;
+        var r = await Call(t => Api.AdminCreateUser(t, username.Trim(), email.Trim(), string.IsNullOrWhiteSpace(displayName) ? null : displayName.Trim()));
+        if (r is null) return;
+        if (!r.Ok) { createError = Explain(r); return; }
+        secret = r.Value!.TemporaryPassword; // component state only; cleared on dismiss
+        secretFor = r.Value.User.Username;
+        username = email = displayName = "";
+        await Load();
+    }
+
+    private async Task Patch(User u, bool? disabled, bool? isAdmin)
+    {
+        rowErrors.Remove(u.Id);
+        var r = await Call(t => Api.AdminPatchUser(t, u.Id, disabled, isAdmin));
+        if (r is null) return;
+        if (!r.Ok) { rowErrors[u.Id] = Explain(r); return; }
+        await Load();
+    }
+
+    private async Task Reset(User u)
+    {
+        rowErrors.Remove(u.Id);
+        var r = await Call(t => Api.AdminResetPassword(t, u.Id));
+        if (r is null) return;
+        if (!r.Ok) { rowErrors[u.Id] = Explain(r); return; }
+        secret = r.Value!.TemporaryPassword;
+        secretFor = u.Username;
+    }
+}

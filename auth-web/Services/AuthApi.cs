@@ -49,6 +49,49 @@ public sealed class AuthApi(HttpClient http, RequestContext context, ILogger<Aut
     public Task<ApiResult<ExchangeResponse>> ExchangeSocialTicket(string ticket) =>
         Send<ExchangeResponse>(HttpMethod.Post, "/api/social/exchange", null, new { ticket });
 
+    public Task<ApiResult<User>> UpdateDisplayName(string session, string displayName) =>
+        Send<User>(HttpMethod.Patch, "/api/me", session, new { display_name = displayName });
+
+    public Task<ApiResult<List<Identity>>> Identities(string session) =>
+        Send<List<Identity>>(HttpMethod.Get, "/api/me/identities", session, null);
+
+    public async Task<ApiResult> Unlink(string session, string provider) =>
+        await Send<object>(HttpMethod.Delete, $"/api/me/identities/{Uri.EscapeDataString(provider)}", session, null);
+
+    public Task<ApiResult<LinkIntentResponse>> LinkIntent(string session, string provider) =>
+        Send<LinkIntentResponse>(HttpMethod.Post, "/api/social/link-intent", session, new { provider });
+
+    public async Task<ApiResult> ConfirmLink(string session, string ticket) =>
+        await Send<object>(HttpMethod.Post, "/api/me/identities/confirm", session, new { ticket });
+
+    public Task<ApiResult<List<SessionInfo>>> Sessions(string session) =>
+        Send<List<SessionInfo>>(HttpMethod.Get, "/api/me/sessions", session, null);
+
+    public async Task<ApiResult> RevokeSession(string session, Guid id) =>
+        await Send<object>(HttpMethod.Delete, $"/api/me/sessions/{id}", session, null);
+
+    public Task<ApiResult<List<AppPasswordInfo>>> AppPasswords(string session) =>
+        Send<List<AppPasswordInfo>>(HttpMethod.Get, "/api/me/app-passwords", session, null);
+
+    public Task<ApiResult<CreatedAppPassword>> CreateAppPassword(string session, string label) =>
+        Send<CreatedAppPassword>(HttpMethod.Post, "/api/me/app-passwords", session, new { label });
+
+    public async Task<ApiResult> DeleteAppPassword(string session, Guid id) =>
+        await Send<object>(HttpMethod.Delete, $"/api/me/app-passwords/{id}", session, null);
+
+    public Task<ApiResult<List<User>>> AdminUsers(string session) =>
+        Send<List<User>>(HttpMethod.Get, "/api/admin/users", session, null);
+
+    public Task<ApiResult<CreateUserResponse>> AdminCreateUser(string session, string username, string email, string? displayName) =>
+        Send<CreateUserResponse>(HttpMethod.Post, "/api/admin/users", session,
+            new { username, email, display_name = displayName });
+
+    public Task<ApiResult<User>> AdminPatchUser(string session, Guid id, bool? disabled, bool? isAdmin) =>
+        Send<User>(HttpMethod.Patch, $"/api/admin/users/{id}", session, new { disabled, is_admin = isAdmin });
+
+    public Task<ApiResult<ResetPasswordResponse>> AdminResetPassword(string session, Guid id) =>
+        Send<ResetPasswordResponse>(HttpMethod.Post, $"/api/admin/users/{id}/reset-password", session, null);
+
     private async Task<ApiResult<T>> Send<T>(HttpMethod method, string path, string? session, object? body,
         LogLevel outage = LogLevel.Error)
     {
