@@ -1,0 +1,8 @@
+target/
+bin/
+obj/
+*.db
+*.db-*
+*.key
+config.local.toml
+.env
