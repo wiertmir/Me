@@ -6,3 +6,4 @@ obj/
 *.key
 config.local.toml
 .env
+.superpowers/
