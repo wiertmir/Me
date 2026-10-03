@@ -33,13 +33,21 @@ pub(crate) fn validation(msg: &str) -> ApiError {
 }
 
 fn invalid_token() -> ApiError {
-    ApiError::new(StatusCode::BAD_REQUEST, "invalid_token", "invalid or expired token")
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "invalid_token",
+        "invalid or expired token",
+    )
 }
 
 async fn send_token_mail(s: &AppState, user: &User, purpose: Purpose) -> Result<(), ApiError> {
     let token = email_tokens::create(&s.db, user.id, purpose)?;
     let (path, subject, what) = match purpose {
-        Purpose::Verify => ("verify", "Verify your email address", "To verify your email address"),
+        Purpose::Verify => (
+            "verify",
+            "Verify your email address",
+            "To verify your email address",
+        ),
         Purpose::Reset => ("reset", "Reset your password", "To reset your password"),
     };
     let body = format!(
@@ -47,7 +55,13 @@ async fn send_token_mail(s: &AppState, user: &User, purpose: Purpose) -> Result<
         purpose.valid_for(),
         s.cfg.web_url.trim_end_matches('/'),
     );
-    s.mail.dispatch(Email { to: user.email.clone(), subject: subject.into(), body }).await;
+    s.mail
+        .dispatch(Email {
+            to: user.email.clone(),
+            subject: subject.into(),
+            body,
+        })
+        .await;
     Ok(())
 }
 
@@ -66,7 +80,9 @@ struct SignupResponse {
 }
 
 pub(crate) fn valid_username(u: &str) -> bool {
-    (3..=32).contains(&u.len()) && u.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+    (3..=32).contains(&u.len())
+        && u.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
 }
 
 pub(crate) fn valid_email(e: &str) -> bool {
@@ -83,19 +99,36 @@ pub(crate) fn valid_email(e: &str) -> bool {
     (status = 409, description = "username or email taken", body = ErrorBody),
     (status = 422, body = ErrorBody),
 ))]
-async fn signup(State(s): State<AppState>, Json(req): Json<SignupRequest>) -> Result<(StatusCode, Json<SignupResponse>), ApiError> {
+async fn signup(
+    State(s): State<AppState>,
+    Json(req): Json<SignupRequest>,
+) -> Result<(StatusCode, Json<SignupResponse>), ApiError> {
     if s.cfg.signup == SignupMode::Disabled {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "signup_disabled", "sign-up is disabled"));
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "signup_disabled",
+            "sign-up is disabled",
+        ));
     }
-    let (username, email) = (users::normalize(&req.username), users::normalize(&req.email));
+    let (username, email) = (
+        users::normalize(&req.username),
+        users::normalize(&req.email),
+    );
     if !valid_username(&username) {
-        return Err(validation("username must be 3-32 characters of a-z, 0-9, . _ -"));
+        return Err(validation(
+            "username must be 3-32 characters of a-z, 0-9, . _ -",
+        ));
     }
     if !valid_email(&email) {
         return Err(validation("email address is not valid"));
     }
     crypto::validate_password(&req.password)?;
-    let display_name = req.display_name.as_deref().unwrap_or_default().trim().to_string();
+    let display_name = req
+        .display_name
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if display_name.chars().count() > 100 {
         return Err(validation("display name is too long"));
     }
@@ -103,7 +136,14 @@ async fn signup(State(s): State<AppState>, Json(req): Json<SignupRequest>) -> Re
     let password_hash = super::hash(&s, req.password).await?;
     let mut user = users::create(
         &s.db,
-        NewUser { username, email, email_verified: !verification_required, is_admin: false, must_change_password: false, password_hash: Some(password_hash) },
+        NewUser {
+            username,
+            email,
+            email_verified: !verification_required,
+            is_admin: false,
+            must_change_password: false,
+            password_hash: Some(password_hash),
+        },
     )?;
     if !display_name.is_empty() {
         users::set_display_name(&s.db, user.id, &display_name)?;
@@ -116,7 +156,13 @@ async fn signup(State(s): State<AppState>, Json(req): Json<SignupRequest>) -> Re
             tracing::error!(event = "signup", user_id = %user.id, error = %e.message, "creating verification token failed");
         }
     }
-    Ok((StatusCode::CREATED, Json(SignupResponse { user, verification_required })))
+    Ok((
+        StatusCode::CREATED,
+        Json(SignupResponse {
+            user,
+            verification_required,
+        }),
+    ))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -129,8 +175,12 @@ struct TokenRequest {
     (status = 204),
     (status = 400, description = "invalid_token", body = ErrorBody),
 ))]
-async fn verify_email(State(s): State<AppState>, Json(req): Json<TokenRequest>) -> Result<StatusCode, ApiError> {
-    let id = email_tokens::consume(&s.db, &req.token, Purpose::Verify)?.ok_or_else(invalid_token)?;
+async fn verify_email(
+    State(s): State<AppState>,
+    Json(req): Json<TokenRequest>,
+) -> Result<StatusCode, ApiError> {
+    let id =
+        email_tokens::consume(&s.db, &req.token, Purpose::Verify)?.ok_or_else(invalid_token)?;
     users::mark_verified(&s.db, id)?;
     tracing::info!(event = "email_verified", user_id = %id);
     Ok(StatusCode::NO_CONTENT)
@@ -143,15 +193,29 @@ struct EmailRequest {
 
 /// Counts a mail request against per-IP and per-email limits (never cleared), so the endpoint
 /// cannot be used to flood a mailbox. The email key locks whether or not the account exists.
-fn limit_mail(s: &AppState, kind: &str, headers: &HeaderMap, email: &str) -> Result<String, SigninError> {
+fn limit_mail(
+    s: &AppState,
+    kind: &str,
+    headers: &HeaderMap,
+    email: &str,
+) -> Result<String, SigninError> {
     let (ip, _) = client_info(headers);
-    s.limiter.begin(&format!("ip:{kind}:{ip}")).map_err(SigninError::Limited)?;
-    s.limiter.begin(&format!("{kind}:{}", email.chars().take(254).collect::<String>())).map_err(SigninError::Limited)?;
+    s.limiter
+        .begin(&format!("ip:{kind}:{ip}"))
+        .map_err(SigninError::Limited)?;
+    s.limiter
+        .begin(&format!(
+            "{kind}:{}",
+            email.chars().take(254).collect::<String>()
+        ))
+        .map_err(SigninError::Limited)?;
     Ok(ip)
 }
 
 async fn mail_target(s: &AppState, email: &str) -> Result<Option<User>, ApiError> {
-    Ok(users::find_by_login(&s.db, email)?.map(|(u, _)| u).filter(|u| u.email == email && !u.disabled))
+    Ok(users::find_by_login(&s.db, email)?
+        .map(|(u, _)| u)
+        .filter(|u| u.email == email && !u.disabled))
 }
 
 /// Sends a fresh verification mail if the account exists and is unverified. Always 204.
@@ -159,7 +223,11 @@ async fn mail_target(s: &AppState, email: &str) -> Result<Option<User>, ApiError
     (status = 204),
     (status = 429, body = ErrorBody),
 ))]
-async fn resend_verification(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<EmailRequest>) -> Result<StatusCode, SigninError> {
+async fn resend_verification(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<EmailRequest>,
+) -> Result<StatusCode, SigninError> {
     let email = users::normalize(&req.email);
     limit_mail(&s, "resend", &headers, &email)?;
     if s.mail.enabled()
@@ -175,7 +243,11 @@ async fn resend_verification(State(s): State<AppState>, headers: HeaderMap, Json
     (status = 204),
     (status = 429, body = ErrorBody),
 ))]
-async fn forgot_password(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<EmailRequest>) -> Result<StatusCode, SigninError> {
+async fn forgot_password(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<EmailRequest>,
+) -> Result<StatusCode, SigninError> {
     if !s.mail.enabled() {
         return Ok(StatusCode::NO_CONTENT);
     }
@@ -202,7 +274,10 @@ struct ResetRequest {
     (status = 400, description = "invalid_token", body = ErrorBody),
     (status = 422, body = ErrorBody),
 ))]
-async fn reset_password(State(s): State<AppState>, Json(req): Json<ResetRequest>) -> Result<StatusCode, ApiError> {
+async fn reset_password(
+    State(s): State<AppState>,
+    Json(req): Json<ResetRequest>,
+) -> Result<StatusCode, ApiError> {
     // Validated first so a typo does not burn the token.
     crypto::validate_password(&req.new_password)?;
     let id = email_tokens::consume(&s.db, &req.token, Purpose::Reset)?.ok_or_else(invalid_token)?;

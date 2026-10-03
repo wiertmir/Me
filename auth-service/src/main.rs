@@ -4,7 +4,10 @@ use auth_service::{Config, app, build_state, logging};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let path: PathBuf = std::env::args().nth(1).unwrap_or_else(|| "config.toml".into()).into();
+    let path: PathBuf = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "config.toml".into())
+        .into();
     let cfg = Config::load(&path)?;
     logging::init(&cfg.log);
     let listen = cfg.listen;

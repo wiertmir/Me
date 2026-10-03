@@ -36,13 +36,28 @@ pub struct AppState {
 
 /// Opens the database under `cfg.data_dir`. Returns the one-time seed password when a user was seeded.
 pub fn build_state(cfg: Config) -> anyhow::Result<(AppState, Option<String>)> {
-    anyhow::ensure!(cfg.service_secret.len() >= 16, "service_secret must be at least 16 characters");
+    anyhow::ensure!(
+        cfg.service_secret.len() >= 16,
+        "service_secret must be at least 16 characters"
+    );
     std::fs::create_dir_all(&cfg.data_dir)?;
     let db = Db::open(&cfg.data_dir.join("auth.db"))?;
-    let email = cfg.seed_email.clone().unwrap_or_else(|| format!("{}@localhost", cfg.seed_username));
+    let email = cfg
+        .seed_email
+        .clone()
+        .unwrap_or_else(|| format!("{}@localhost", cfg.seed_username));
     let seed_password = users::seed(&db, &cfg.seed_username, &email)?;
     let mail = mail::Mailer::from_config(cfg.smtp.as_ref())?;
-    Ok((AppState { cfg: Arc::new(cfg), db, limiter: Default::default(), hashing: Arc::new(tokio::sync::Semaphore::new(HASH_PERMITS)), mail }, seed_password))
+    Ok((
+        AppState {
+            cfg: Arc::new(cfg),
+            db,
+            limiter: Default::default(),
+            hashing: Arc::new(tokio::sync::Semaphore::new(HASH_PERMITS)),
+            mail,
+        },
+        seed_password,
+    ))
 }
 
 #[derive(Serialize, ToSchema)]
@@ -73,6 +88,9 @@ pub fn app(state: AppState) -> Router {
         .with_state(state.clone())
         .merge(openapi::routes(api))
         .fallback(not_found)
-        .layer(middleware::from_fn_with_state(state, sessions::require_service_secret))
+        .layer(middleware::from_fn_with_state(
+            state,
+            sessions::require_service_secret,
+        ))
         .layer(middleware::from_fn(logging::request_layer))
 }

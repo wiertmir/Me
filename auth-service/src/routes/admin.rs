@@ -33,7 +33,10 @@ fn not_found() -> ApiError {
     (status = 401, body = ErrorBody),
     (status = 403, body = ErrorBody),
 ))]
-async fn list_users(State(s): State<AppState>, _admin: AdminUser) -> Result<Json<Vec<User>>, ApiError> {
+async fn list_users(
+    State(s): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<Vec<User>>, ApiError> {
     Ok(Json(users::list_all(&s.db)?))
 }
 
@@ -64,14 +67,24 @@ async fn create_user(
     AdminUser(admin): AdminUser,
     Json(req): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<CreateUserResponse>), ApiError> {
-    let (username, email) = (users::normalize(&req.username), users::normalize(&req.email));
+    let (username, email) = (
+        users::normalize(&req.username),
+        users::normalize(&req.email),
+    );
     if !valid_username(&username) {
-        return Err(validation("username must be 3-32 characters of a-z, 0-9, . _ -"));
+        return Err(validation(
+            "username must be 3-32 characters of a-z, 0-9, . _ -",
+        ));
     }
     if !valid_email(&email) {
         return Err(validation("email address is not valid"));
     }
-    let display_name = req.display_name.as_deref().unwrap_or_default().trim().to_string();
+    let display_name = req
+        .display_name
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if display_name.chars().count() > 100 {
         return Err(validation("display name is too long"));
     }
@@ -79,14 +92,27 @@ async fn create_user(
     let password_hash = super::hash(&s, temporary_password.clone()).await?;
     let mut user = users::create(
         &s.db,
-        NewUser { username, email, email_verified: true, is_admin: false, must_change_password: true, password_hash: Some(password_hash) },
+        NewUser {
+            username,
+            email,
+            email_verified: true,
+            is_admin: false,
+            must_change_password: true,
+            password_hash: Some(password_hash),
+        },
     )?;
     if !display_name.is_empty() {
         users::set_display_name(&s.db, user.id, &display_name)?;
         user.display_name = display_name;
     }
     tracing::info!(event = "admin_user_created", admin_id = %admin.user.id, target_id = %user.id);
-    Ok((StatusCode::CREATED, Json(CreateUserResponse { user, temporary_password })))
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateUserResponse {
+            user,
+            temporary_password,
+        }),
+    ))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -115,7 +141,13 @@ async fn patch_user(
     }
     match users::update_flags(&s.db, id, req.disabled, req.is_admin)? {
         FlagsOutcome::NotFound => return Err(not_found()),
-        FlagsOutcome::LastAdmin => return Err(ApiError::new(StatusCode::CONFLICT, "last_admin", "there must be at least one enabled admin")),
+        FlagsOutcome::LastAdmin => {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "last_admin",
+                "there must be at least one enabled admin",
+            ));
+        }
         FlagsOutcome::Updated => {}
     }
     tracing::info!(event = "admin_user_updated", admin_id = %admin.user.id, target_id = %id, disabled = ?req.disabled, is_admin = ?req.is_admin);
@@ -135,7 +167,11 @@ struct TemporaryPassword {
     (status = 403, body = ErrorBody),
     (status = 404, body = ErrorBody),
 ))]
-async fn reset_user_password(State(s): State<AppState>, AdminUser(admin): AdminUser, Path(id): Path<Uuid>) -> Result<Json<TemporaryPassword>, ApiError> {
+async fn reset_user_password(
+    State(s): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<TemporaryPassword>, ApiError> {
     let temporary_password = crypto::temporary_password();
     let password_hash = super::hash(&s, temporary_password.clone()).await?;
     if !users::admin_reset(&s.db, id, &password_hash)? {

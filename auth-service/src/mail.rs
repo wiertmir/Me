@@ -1,8 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    message::Mailbox,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::Mailbox,
     transport::smtp::authentication::Credentials,
 };
 
@@ -50,7 +49,11 @@ impl Mailer {
             }
             Self::Smtp(smtp) => {
                 let (transport, from) = &**smtp;
-                let msg = Message::builder().from(from.clone()).to(Mailbox::new(None, email.to.parse::<lettre::Address>()?)).subject(email.subject).body(email.body)?;
+                let msg = Message::builder()
+                    .from(from.clone())
+                    .to(Mailbox::new(None, email.to.parse::<lettre::Address>()?))
+                    .subject(email.subject)
+                    .body(email.body)?;
                 transport.send(msg).await?;
                 Ok(())
             }

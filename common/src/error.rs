@@ -23,7 +23,11 @@ pub struct ErrorBody {
 
 impl ApiError {
     pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self { status, code, message: message.into() }
+        Self {
+            status,
+            code,
+            message: message.into(),
+        }
     }
 }
 
@@ -46,6 +50,9 @@ mod tests {
         assert_eq!(r.status(), StatusCode::CONFLICT);
         let bytes = axum::body::to_bytes(r.into_body(), 1024).await.unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(v, serde_json::json!({"code": "taken", "message": "name taken"}));
+        assert_eq!(
+            v,
+            serde_json::json!({"code": "taken", "message": "name taken"})
+        );
     }
 }

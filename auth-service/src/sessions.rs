@@ -8,16 +8,23 @@ use chrono::{DateTime, Utc};
 use common::{ApiError, ApiResult};
 use rusqlite::params;
 use serde::Serialize;
-use utoipa::ToSchema;
 use subtle::ConstantTimeEq;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::{AppState, Db, crypto, users::{self, User}};
+use crate::{
+    AppState, Db, crypto,
+    users::{self, User},
+};
 
 const SESSION_SECS: i64 = 30 * 24 * 3600;
 
 pub fn unauthorized() -> ApiError {
-    ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "authentication required")
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "authentication required",
+    )
 }
 
 /// Returns the raw session token (only its hash is stored).
@@ -35,12 +42,22 @@ pub fn create(db: &Db, user: Uuid, ua: &str, ip: &str) -> ApiResult<String> {
 }
 
 pub fn delete(db: &Db, session_id: Uuid) -> ApiResult<()> {
-    db.with(|c| c.execute("DELETE FROM sessions WHERE id = ?1", [session_id.to_string()]))?;
+    db.with(|c| {
+        c.execute(
+            "DELETE FROM sessions WHERE id = ?1",
+            [session_id.to_string()],
+        )
+    })?;
     Ok(())
 }
 
 pub fn delete_others(db: &Db, user: Uuid, keep: Uuid) -> ApiResult<()> {
-    db.with(|c| c.execute("DELETE FROM sessions WHERE user_id = ?1 AND id != ?2", [user.to_string(), keep.to_string()]))?;
+    db.with(|c| {
+        c.execute(
+            "DELETE FROM sessions WHERE user_id = ?1 AND id != ?2",
+            [user.to_string(), keep.to_string()],
+        )
+    })?;
     Ok(())
 }
 
@@ -64,7 +81,13 @@ pub fn list(db: &Db, user: Uuid, current: Uuid) -> ApiResult<Vec<SessionInfo>> {
         )?;
         st.query_map(params![user.to_string(), Utc::now().timestamp()], |r| {
             let id: String = r.get(0)?;
-            let id = Uuid::parse_str(&id).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+            let id = Uuid::parse_str(&id).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
             Ok(SessionInfo {
                 id,
                 created_at: ts(r.get(1)?),
@@ -80,15 +103,26 @@ pub fn list(db: &Db, user: Uuid, current: Uuid) -> ApiResult<Vec<SessionInfo>> {
 
 /// Deletes the session only if it belongs to `user`; false when it does not exist or is someone else's.
 pub fn delete_owned(db: &Db, user: Uuid, session_id: Uuid) -> ApiResult<bool> {
-    let n = db.with(|c| c.execute("DELETE FROM sessions WHERE id = ?1 AND user_id = ?2", [session_id.to_string(), user.to_string()]))?;
+    let n = db.with(|c| {
+        c.execute(
+            "DELETE FROM sessions WHERE id = ?1 AND user_id = ?2",
+            [session_id.to_string(), user.to_string()],
+        )
+    })?;
     Ok(n > 0)
 }
 
 /// Revokes every session and refresh token of the user.
 pub fn delete_all(db: &Db, user: Uuid) -> ApiResult<()> {
     db.with(|c| {
-        c.execute("DELETE FROM sessions WHERE user_id = ?1", [user.to_string()])?;
-        c.execute("DELETE FROM refresh_tokens WHERE user_id = ?1", [user.to_string()])
+        c.execute(
+            "DELETE FROM sessions WHERE user_id = ?1",
+            [user.to_string()],
+        )?;
+        c.execute(
+            "DELETE FROM refresh_tokens WHERE user_id = ?1",
+            [user.to_string()],
+        )
     })?;
     Ok(())
 }
@@ -108,7 +142,10 @@ fn lookup(db: &Db, token: &str) -> ApiResult<Option<(Uuid, Uuid)>> {
             Err(e) => return Err(e),
         };
         if let Some((id, _)) = &found {
-            c.execute("UPDATE sessions SET last_seen = ?1 WHERE id = ?2", params![now, id])?;
+            c.execute(
+                "UPDATE sessions SET last_seen = ?1 WHERE id = ?2",
+                params![now, id],
+            )?;
         }
         Ok(found)
     })?;
@@ -117,7 +154,9 @@ fn lookup(db: &Db, token: &str) -> ApiResult<Option<(Uuid, Uuid)>> {
 
 fn secret_ok(headers: &HeaderMap, expected: &str) -> bool {
     // An absent header must never match, even against an (invalid) empty secret.
-    headers.get("x-service-secret").is_some_and(|v| v.as_bytes().ct_eq(expected.as_bytes()).into())
+    headers
+        .get("x-service-secret")
+        .is_some_and(|v| v.as_bytes().ct_eq(expected.as_bytes()).into())
 }
 
 /// Rejects every `/api/*` request lacking the service secret, except the public API docs.
@@ -128,7 +167,8 @@ pub async fn require_service_secret(
 ) -> Result<Response, ApiError> {
     let path = req.uri().path();
     let public = matches!(path, "/api/openapi.json" | "/api/docs");
-    if path.starts_with("/api/") && !public && !secret_ok(req.headers(), &state.cfg.service_secret) {
+    if path.starts_with("/api/") && !public && !secret_ok(req.headers(), &state.cfg.service_secret)
+    {
         return Err(unauthorized());
     }
     Ok(next.run(req).await)
@@ -140,7 +180,9 @@ pub struct ServiceAuth;
 impl FromRequestParts<AppState> for ServiceAuth {
     type Rejection = ApiError;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        secret_ok(&parts.headers, &state.cfg.service_secret).then_some(ServiceAuth).ok_or_else(unauthorized)
+        secret_ok(&parts.headers, &state.cfg.service_secret)
+            .then_some(ServiceAuth)
+            .ok_or_else(unauthorized)
     }
 }
 
@@ -162,7 +204,10 @@ async fn load(parts: &Parts, state: &AppState) -> ApiResult<SessionUser> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(unauthorized)?;
     let (session_id, user_id) = lookup(&state.db, token)?.ok_or_else(unauthorized)?;
-    Ok(SessionUser { user: users::get(&state.db, user_id)?, session_id })
+    Ok(SessionUser {
+        user: users::get(&state.db, user_id)?,
+        session_id,
+    })
 }
 
 impl FromRequestParts<AppState> for PendingUser {
@@ -177,7 +222,11 @@ impl FromRequestParts<AppState> for SessionUser {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let s = load(parts, state).await?;
         if s.user.must_change_password {
-            return Err(ApiError::new(StatusCode::FORBIDDEN, "password_change_required", "password change required"));
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "password_change_required",
+                "password change required",
+            ));
         }
         Ok(s)
     }
@@ -188,7 +237,11 @@ impl FromRequestParts<AppState> for AdminUser {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let s = SessionUser::from_request_parts(parts, state).await?;
         if !s.user.is_admin {
-            return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden", "admin only"));
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "admin only",
+            ));
         }
         Ok(AdminUser(s))
     }

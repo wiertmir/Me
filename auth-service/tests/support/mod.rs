@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 use std::sync::{Arc, Mutex};
 
-use auth_service::{AppState, Config, app, build_state, mail::{Email, Mailer}};
+use auth_service::{
+    AppState, Config, app, build_state,
+    mail::{Email, Mailer},
+};
 use axum::http::{Method, StatusCode};
 use serde_json::Value;
 
@@ -67,15 +70,30 @@ impl TestApp {
         let mails = outbox.lock().unwrap();
         let body = &mails.last().expect("no mail sent").body;
         let rest = body.split("token=").nth(1).expect("no token in mail");
-        rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')).next().unwrap().to_string()
+        rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .next()
+            .unwrap()
+            .to_string()
     }
 
     pub fn last_mail_body(&self) -> String {
-        self.outbox().lock().unwrap().last().expect("no mail sent").body.clone()
+        self.outbox()
+            .lock()
+            .unwrap()
+            .last()
+            .expect("no mail sent")
+            .body
+            .clone()
     }
 
     /// Sends X-Service-Secret, optional bearer session; returns status and JSON (Null if empty).
-    pub async fn api(&self, method: Method, path: &str, session: Option<&str>, body: Value) -> (StatusCode, Value) {
+    pub async fn api(
+        &self,
+        method: Method,
+        path: &str,
+        session: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
         let mut req = self
             .http
             .request(method, format!("{}{}", self.base, path))
@@ -89,14 +107,23 @@ impl TestApp {
         let resp = req.send().await.unwrap();
         let status = resp.status();
         let bytes = resp.bytes().await.unwrap();
-        let json = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::Null) };
+        let json = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
         (status, json)
     }
 
     /// Signs in the seed user, replaces the one-time password with "correct horse battery"; returns the session token.
     pub async fn admin_session(&self) -> String {
         let (s, b) = self
-            .api(Method::POST, "/api/signin", None, serde_json::json!({"login": "wiertmir", "password": self.seed_password}))
+            .api(
+                Method::POST,
+                "/api/signin",
+                None,
+                serde_json::json!({"login": "wiertmir", "password": self.seed_password}),
+            )
             .await;
         assert_eq!(s, StatusCode::OK, "{b}");
         let token = b["session_token"].as_str().unwrap().to_string();

@@ -1,4 +1,7 @@
-use std::{path::Path, sync::{Arc, Mutex}};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use axum::http::StatusCode;
 use common::{ApiError, ApiResult};
@@ -99,7 +102,11 @@ impl Db {
         let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
         f(&conn).map_err(|e| {
             tracing::error!(error = %e, "database error");
-            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", "internal error")
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal error",
+            )
         })
     }
 }
@@ -112,10 +119,18 @@ mod tests {
     fn schema_has_all_tables_and_foreign_keys() {
         let db = Db::open_in_memory().unwrap();
         let n: i64 = db
-            .with(|c| c.query_row("SELECT count(*) FROM sqlite_master WHERE type='table'", [], |r| r.get(0)))
+            .with(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
             .unwrap();
         assert_eq!(n, 8);
-        let fk: i64 = db.with(|c| c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))).unwrap();
+        let fk: i64 = db
+            .with(|c| c.query_row("PRAGMA foreign_keys", [], |r| r.get(0)))
+            .unwrap();
         assert_eq!(fk, 1);
     }
 }

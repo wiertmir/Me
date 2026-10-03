@@ -36,10 +36,20 @@ impl Purpose {
 
 /// Returns the raw token (only its hash is stored).
 pub fn create(db: &Db, user: Uuid, purpose: Purpose) -> ApiResult<String> {
-    create_expiring(db, user, purpose, Utc::now().timestamp() + purpose.ttl_secs())
+    create_expiring(
+        db,
+        user,
+        purpose,
+        Utc::now().timestamp() + purpose.ttl_secs(),
+    )
 }
 
-pub fn create_expiring(db: &Db, user: Uuid, purpose: Purpose, expires_at: i64) -> ApiResult<String> {
+pub fn create_expiring(
+    db: &Db,
+    user: Uuid,
+    purpose: Purpose,
+    expires_at: i64,
+) -> ApiResult<String> {
     let token = crypto::random_token();
     db.with(|c| {
         c.execute(
@@ -60,10 +70,17 @@ pub fn consume(db: &Db, token: &str, purpose: Purpose) -> ApiResult<Option<Uuid>
         )
         .optional()
     })?;
-    Ok(found.filter(|(_, exp)| *exp > Utc::now().timestamp()).and_then(|(u, _)| Uuid::parse_str(&u).ok()))
+    Ok(found
+        .filter(|(_, exp)| *exp > Utc::now().timestamp())
+        .and_then(|(u, _)| Uuid::parse_str(&u).ok()))
 }
 
 pub fn delete_for_user(db: &Db, user: Uuid, purpose: Purpose) -> ApiResult<()> {
-    db.with(|c| c.execute("DELETE FROM email_tokens WHERE user_id = ?1 AND purpose = ?2", params![user.to_string(), purpose.name()]))?;
+    db.with(|c| {
+        c.execute(
+            "DELETE FROM email_tokens WHERE user_id = ?1 AND purpose = ?2",
+            params![user.to_string(), purpose.name()],
+        )
+    })?;
     Ok(())
 }

@@ -12,11 +12,15 @@ use sha2::{Digest, Sha256};
 pub const MAX_PASSWORD_BYTES: usize = 1024;
 
 pub fn hash_password(pw: &str) -> String {
-    Argon2::default().hash_password(pw.as_bytes()).expect("argon2 hashing with default params").to_string()
+    Argon2::default()
+        .hash_password(pw.as_bytes())
+        .expect("argon2 hashing with default params")
+        .to_string()
 }
 
 pub fn verify_password(pw: &str, hash: &str) -> bool {
-    PasswordHash::new(hash).is_ok_and(|h| Argon2::default().verify_password(pw.as_bytes(), &h).is_ok())
+    PasswordHash::new(hash)
+        .is_ok_and(|h| Argon2::default().verify_password(pw.as_bytes(), &h).is_ok())
 }
 
 /// Verifies against a throwaway hash so unknown users cost the same time as wrong passwords.
@@ -57,12 +61,19 @@ const TEMP_ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 pub fn temporary_password() -> String {
     use rand::TryRng as _;
     let mut buf = [0u8; 16];
-    rand::rngs::SysRng.try_fill_bytes(&mut buf).expect("OS random source unavailable");
-    buf.iter().map(|b| TEMP_ALPHABET[(b & 31) as usize] as char).collect()
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut buf)
+        .expect("OS random source unavailable");
+    buf.iter()
+        .map(|b| TEMP_ALPHABET[(b & 31) as usize] as char)
+        .collect()
 }
 
 pub fn sha256_hex(s: &str) -> String {
-    Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(s.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -81,7 +92,10 @@ mod tests {
         assert_eq!(t.len(), 16);
         assert!(t.bytes().all(|b| TEMP_ALPHABET.contains(&b)));
         assert!(!"0O1lI".chars().any(|c| TEMP_ALPHABET.contains(&(c as u8))));
-        assert_eq!(sha256_hex("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            sha256_hex("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         assert!(validate_password("short").is_err());
         assert!(validate_password(&"a".repeat(1025)).is_err());
         assert!(validate_password("twelve chars").is_ok());

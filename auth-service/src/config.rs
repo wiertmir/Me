@@ -1,4 +1,8 @@
-use std::{collections::HashMap, net::SocketAddr, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
 
@@ -27,7 +31,10 @@ pub struct LogConfig {
 
 impl Default for LogConfig {
     fn default() -> Self {
-        Self { format: LogFormat::Pretty, level: "info".into() }
+        Self {
+            format: LogFormat::Pretty,
+            level: "info".into(),
+        }
     }
 }
 
@@ -106,7 +113,10 @@ impl std::fmt::Debug for SmtpConfig {
 
 impl std::fmt::Debug for ProviderConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProviderConfig").field("client_id", &self.client_id).field("client_secret", &"<redacted>").finish()
+        f.debug_struct("ProviderConfig")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .finish()
     }
 }
 
@@ -144,10 +154,15 @@ impl Config {
     }
 
     // ponytail: env overrides are strings only (fine for secrets, urls, levels); typed values go in the file
-    pub fn from_toml(text: &str, env: impl IntoIterator<Item = (String, String)>) -> anyhow::Result<Self> {
+    pub fn from_toml(
+        text: &str,
+        env: impl IntoIterator<Item = (String, String)>,
+    ) -> anyhow::Result<Self> {
         let mut doc: toml::Table = text.parse()?;
         for (key, value) in env {
-            let Some(rest) = key.strip_prefix("ME_AUTH__") else { continue };
+            let Some(rest) = key.strip_prefix("ME_AUTH__") else {
+                continue;
+            };
             let parts: Vec<String> = rest.split("__").map(str::to_lowercase).collect();
             let (last, parents) = parts.split_last().expect("split yields at least one part");
             let mut table = &mut doc;
@@ -199,7 +214,10 @@ seed_username = "wiertmir"
     #[test]
     fn defaults_and_env_override() {
         let env = [
-            ("ME_AUTH__SERVICE_SECRET".to_string(), "from-env".to_string()),
+            (
+                "ME_AUTH__SERVICE_SECRET".to_string(),
+                "from-env".to_string(),
+            ),
             ("ME_AUTH__LOG__FORMAT".to_string(), "json".to_string()),
             ("UNRELATED".to_string(), "x".to_string()),
         ];

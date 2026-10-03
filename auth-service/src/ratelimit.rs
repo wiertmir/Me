@@ -40,7 +40,11 @@ impl RateLimiter {
     pub fn begin(&self, key: &str) -> Result<(), Duration> {
         let now = Instant::now();
         let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let e = map.entry(key.to_string()).or_insert(Entry { failures: 0, last_failure: now, locked_until: None });
+        let e = map.entry(key.to_string()).or_insert(Entry {
+            failures: 0,
+            last_failure: now,
+            locked_until: None,
+        });
         if let Some(until) = e.locked_until.filter(|u| *u > now) {
             return Err(until - now);
         }

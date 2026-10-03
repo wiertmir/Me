@@ -13,8 +13,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use super::client_info;
 use crate::{
-    AppState,
-    crypto,
+    AppState, crypto,
     sessions::{self, PendingUser},
     users::{self, User},
 };
@@ -56,7 +55,12 @@ impl IntoResponse for SigninError {
             Self::Api(e) => e.into_response(),
             Self::Limited(wait) => {
                 let secs = wait.as_secs_f64().ceil().max(1.0) as u64;
-                let mut r = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", "too many failed attempts, try again later").into_response();
+                let mut r = ApiError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate_limited",
+                    "too many failed attempts, try again later",
+                )
+                .into_response();
                 r.headers_mut().insert(RETRY_AFTER, HeaderValue::from(secs));
                 r
             }
@@ -65,7 +69,11 @@ impl IntoResponse for SigninError {
 }
 
 fn invalid_credentials() -> ApiError {
-    ApiError::new(StatusCode::UNAUTHORIZED, "invalid_credentials", "invalid credentials")
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "invalid_credentials",
+        "invalid credentials",
+    )
 }
 
 /// Argon2 on the blocking pool, with at most `HASH_PERMITS` verifications in flight.
@@ -91,7 +99,11 @@ async fn verify(s: &AppState, pw: String, hash: Option<String>) -> bool {
     (status = 422, body = ErrorBody),
     (status = 429, description = "rate limited; see Retry-After", body = ErrorBody),
 ))]
-async fn signin(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<SigninRequest>) -> Result<Json<SigninResponse>, SigninError> {
+async fn signin(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<SigninRequest>,
+) -> Result<Json<SigninResponse>, SigninError> {
     crypto::check_password_size(&req.password)?;
     let (ip, ua) = client_info(&headers);
     let login = users::normalize(&req.login);
@@ -111,7 +123,10 @@ async fn signin(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<S
 
     let found = users::find_by_login(&s.db, &login)?;
     // Unknown, disabled and passwordless accounts still pay for one hash verification.
-    let hash = found.as_ref().filter(|(u, _)| !u.disabled).and_then(|(_, h)| h.clone());
+    let hash = found
+        .as_ref()
+        .filter(|(u, _)| !u.disabled)
+        .and_then(|(_, h)| h.clone());
     let verified = verify(&s, req.password, hash).await;
     let Some((user, _)) = found.filter(|_| verified) else {
         tracing::warn!(event = "signin", login = %login.chars().take(64).collect::<String>(), ip = %ip, outcome = "failure");
@@ -120,16 +135,27 @@ async fn signin(State(s): State<AppState>, headers: HeaderMap, Json(req): Json<S
     s.limiter.clear(&user_key);
     s.limiter.undo(&ip_key);
     if s.mail.enabled() && !user.email_verified {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "email_not_verified", "verify your email address first").into());
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "email_not_verified",
+            "verify your email address first",
+        )
+        .into());
     }
     let session_token = sessions::create(&s.db, user.id, &ua, &ip)?;
     tracing::info!(event = "signin", user_id = %user.id, ip = %ip, outcome = "success");
-    Ok(Json(SigninResponse { session_token, user }))
+    Ok(Json(SigninResponse {
+        session_token,
+        user,
+    }))
 }
 
 /// Ends the current session. Allowed while a password change is pending.
 #[utoipa::path(post, path = "/api/signout", responses((status = 204), (status = 401, body = ErrorBody)))]
-async fn signout(State(s): State<AppState>, PendingUser(me): PendingUser) -> Result<StatusCode, ApiError> {
+async fn signout(
+    State(s): State<AppState>,
+    PendingUser(me): PendingUser,
+) -> Result<StatusCode, ApiError> {
     sessions::delete(&s.db, me.session_id)?;
     tracing::info!(event = "signout", user_id = %me.user.id);
     Ok(StatusCode::NO_CONTENT)

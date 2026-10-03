@@ -1,9 +1,13 @@
-use axum::{Json, extract::{Path, State}, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use common::{ApiError, ErrorBody};
 use serde::Deserialize;
 use utoipa::ToSchema;
-use uuid::Uuid;
 use utoipa_axum::{router::OpenApiRouter, routes};
+use uuid::Uuid;
 
 use crate::{
     AppState,
@@ -12,7 +16,10 @@ use crate::{
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().routes(routes!(get_me, patch_me)).routes(routes!(list_sessions)).routes(routes!(revoke_session))
+    OpenApiRouter::new()
+        .routes(routes!(get_me, patch_me))
+        .routes(routes!(list_sessions))
+        .routes(routes!(revoke_session))
 }
 
 /// The signed-in user. Also available while a password change is pending.
@@ -33,10 +40,18 @@ struct PatchMe {
     (status = 403, body = ErrorBody),
     (status = 422, body = ErrorBody),
 ))]
-async fn patch_me(State(s): State<AppState>, me: SessionUser, Json(req): Json<PatchMe>) -> Result<Json<User>, ApiError> {
+async fn patch_me(
+    State(s): State<AppState>,
+    me: SessionUser,
+    Json(req): Json<PatchMe>,
+) -> Result<Json<User>, ApiError> {
     let name = req.display_name.trim();
     if name.chars().count() > 100 {
-        return Err(ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "validation", "display name is too long"));
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation",
+            "display name is too long",
+        ));
     }
     users::set_display_name(&s.db, me.user.id, name)?;
     Ok(Json(users::get(&s.db, me.user.id)?))
@@ -48,7 +63,10 @@ async fn patch_me(State(s): State<AppState>, me: SessionUser, Json(req): Json<Pa
     (status = 401, body = ErrorBody),
     (status = 403, body = ErrorBody),
 ))]
-async fn list_sessions(State(s): State<AppState>, me: SessionUser) -> Result<Json<Vec<SessionInfo>>, ApiError> {
+async fn list_sessions(
+    State(s): State<AppState>,
+    me: SessionUser,
+) -> Result<Json<Vec<SessionInfo>>, ApiError> {
     Ok(Json(sessions::list(&s.db, me.user.id, me.session_id)?))
 }
 
@@ -59,9 +77,17 @@ async fn list_sessions(State(s): State<AppState>, me: SessionUser) -> Result<Jso
     (status = 403, body = ErrorBody),
     (status = 404, description = "not_found (unknown or not the caller's)", body = ErrorBody),
 ))]
-async fn revoke_session(State(s): State<AppState>, me: SessionUser, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
+async fn revoke_session(
+    State(s): State<AppState>,
+    me: SessionUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
     if !sessions::delete_owned(&s.db, me.user.id, id)? {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such session"));
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such session",
+        ));
     }
     tracing::info!(event = "session_revoked", user_id = %me.user.id, session_id = %id);
     Ok(StatusCode::NO_CONTENT)
