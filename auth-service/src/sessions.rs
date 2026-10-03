@@ -4,9 +4,11 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use common::{ApiError, ApiResult};
 use rusqlite::params;
+use serde::Serialize;
+use utoipa::ToSchema;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
@@ -40,6 +42,46 @@ pub fn delete(db: &Db, session_id: Uuid) -> ApiResult<()> {
 pub fn delete_others(db: &Db, user: Uuid, keep: Uuid) -> ApiResult<()> {
     db.with(|c| c.execute("DELETE FROM sessions WHERE user_id = ?1 AND id != ?2", [user.to_string(), keep.to_string()]))?;
     Ok(())
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct SessionInfo {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub user_agent: String,
+    pub ip: String,
+    pub current: bool,
+}
+
+/// The user's live sessions, newest first; `current` marks the one making the request.
+pub fn list(db: &Db, user: Uuid, current: Uuid) -> ApiResult<Vec<SessionInfo>> {
+    let ts = |t: i64| DateTime::from_timestamp(t, 0).unwrap_or_default();
+    db.with(|c| {
+        let mut st = c.prepare(
+            "SELECT id, created_at, last_seen, user_agent, ip FROM sessions
+             WHERE user_id = ?1 AND expires_at > ?2 ORDER BY created_at DESC, rowid DESC",
+        )?;
+        st.query_map(params![user.to_string(), Utc::now().timestamp()], |r| {
+            let id: String = r.get(0)?;
+            let id = Uuid::parse_str(&id).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+            Ok(SessionInfo {
+                id,
+                created_at: ts(r.get(1)?),
+                last_seen: ts(r.get(2)?),
+                user_agent: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                ip: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                current: id == current,
+            })
+        })?
+        .collect()
+    })
+}
+
+/// Deletes the session only if it belongs to `user`; false when it does not exist or is someone else's.
+pub fn delete_owned(db: &Db, user: Uuid, session_id: Uuid) -> ApiResult<bool> {
+    let n = db.with(|c| c.execute("DELETE FROM sessions WHERE id = ?1 AND user_id = ?2", [session_id.to_string(), user.to_string()]))?;
+    Ok(n > 0)
 }
 
 /// Revokes every session and refresh token of the user.

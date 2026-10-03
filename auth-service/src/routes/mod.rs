@@ -1,4 +1,5 @@
 pub mod account;
+pub mod admin;
 pub mod auth;
 pub mod signup;
 
@@ -9,7 +10,7 @@ use utoipa_axum::router::OpenApiRouter;
 use crate::{AppState, crypto};
 
 pub fn router() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().merge(auth::router()).merge(signup::router()).merge(account::router())
+    OpenApiRouter::new().merge(auth::router()).merge(signup::router()).merge(account::router()).merge(admin::router())
 }
 
 /// Client address and user agent, as forwarded by auth-web.

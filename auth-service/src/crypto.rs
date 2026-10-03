@@ -50,6 +50,17 @@ pub fn random_token() -> String {
     URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
 }
 
+/// No `0 O 1 l I`; 32 symbols, so a masked random byte is unbiased.
+const TEMP_ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+/// 16-character one-time password from the OS CSPRNG (80 bits).
+pub fn temporary_password() -> String {
+    use rand::TryRng as _;
+    let mut buf = [0u8; 16];
+    rand::rngs::SysRng.try_fill_bytes(&mut buf).expect("OS random source unavailable");
+    buf.iter().map(|b| TEMP_ALPHABET[(b & 31) as usize] as char).collect()
+}
+
 pub fn sha256_hex(s: &str) -> String {
     Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -66,6 +77,10 @@ mod tests {
         assert!(!verify_password("wrong", &h));
         assert!(!verify_password("x", "not a hash"));
         assert_eq!(random_token().len(), 43);
+        let t = temporary_password();
+        assert_eq!(t.len(), 16);
+        assert!(t.bytes().all(|b| TEMP_ALPHABET.contains(&b)));
+        assert!(!"0O1lI".chars().any(|c| TEMP_ALPHABET.contains(&(c as u8))));
         assert_eq!(sha256_hex("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         assert!(validate_password("short").is_err());
         assert!(validate_password(&"a".repeat(1025)).is_err());

@@ -153,3 +153,65 @@ pub fn seed(db: &Db, username: &str, email: &str) -> anyhow::Result<Option<Strin
     .map_err(|e| anyhow::anyhow!("seeding admin: {}", e.message))?;
     Ok(Some(password))
 }
+
+/// Every user, ordered by username.
+// ponytail: no pagination, add limit/offset when user count makes this slow
+pub fn list_all(db: &Db) -> ApiResult<Vec<User>> {
+    db.with(|c| {
+        let mut st = c.prepare(&format!("SELECT {COLS} FROM users ORDER BY username"))?;
+        st.query_map([], |r| row(r).map(|(u, _)| u))?.collect()
+    })
+}
+
+pub enum FlagsOutcome {
+    Updated,
+    NotFound,
+    LastAdmin,
+}
+
+/// Applies `disabled` / `is_admin`. Refuses to leave zero enabled admins; the check, the update and the
+/// session revocation on disable share one transaction under the single connection lock, so concurrent
+/// requests cannot both pass the check.
+pub fn update_flags(db: &Db, id: Uuid, disabled: Option<bool>, is_admin: Option<bool>) -> ApiResult<FlagsOutcome> {
+    let id = id.to_string();
+    db.with(|c| {
+        let tx = c.unchecked_transaction()?;
+        let cur = match tx.query_row("SELECT is_admin, disabled FROM users WHERE id = ?1", [&id], |r| Ok((r.get::<_, bool>(0)?, r.get::<_, bool>(1)?))) {
+            Ok(v) => v,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(FlagsOutcome::NotFound),
+            Err(e) => return Err(e),
+        };
+        let (admin, dis) = (is_admin.unwrap_or(cur.0), disabled.unwrap_or(cur.1));
+        if cur.0 && !cur.1 && (!admin || dis) {
+            let others: i64 = tx.query_row("SELECT count(*) FROM users WHERE is_admin = 1 AND disabled = 0 AND id != ?1", [&id], |r| r.get(0))?;
+            if others == 0 {
+                return Ok(FlagsOutcome::LastAdmin);
+            }
+        }
+        tx.execute("UPDATE users SET is_admin = ?1, disabled = ?2 WHERE id = ?3", params![admin, dis, id])?;
+        if dis {
+            tx.execute("DELETE FROM sessions WHERE user_id = ?1", [&id])?;
+            tx.execute("DELETE FROM refresh_tokens WHERE user_id = ?1", [&id])?;
+        }
+        tx.commit()?;
+        Ok(FlagsOutcome::Updated)
+    })
+}
+
+/// Admin reset: sets the (already hashed) temporary password, forces a change, and revokes the user's
+/// sessions, refresh tokens and outstanding reset tokens. False when the user does not exist.
+pub fn admin_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<bool> {
+    let id = id.to_string();
+    db.with(|c| {
+        let tx = c.unchecked_transaction()?;
+        let n = tx.execute("UPDATE users SET password_hash = ?1, must_change_password = 1 WHERE id = ?2", params![hash, id])?;
+        if n == 0 {
+            return Ok(false);
+        }
+        tx.execute("DELETE FROM sessions WHERE user_id = ?1", [&id])?;
+        tx.execute("DELETE FROM refresh_tokens WHERE user_id = ?1", [&id])?;
+        tx.execute("DELETE FROM email_tokens WHERE user_id = ?1 AND purpose = 'reset'", [&id])?;
+        tx.commit()?;
+        Ok(true)
+    })
+}
