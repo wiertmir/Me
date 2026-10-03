@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use axum::{
-    extract::Request,
+    extract::{MatchedPath, Request},
     http::{HeaderName, HeaderValue},
     middleware::Next,
     response::Response,
@@ -22,6 +22,14 @@ pub fn init(cfg: &LogConfig) {
     }
 }
 
+/// The route template (`/api/auth-requests/{challenge}`) when a route matched, so path parameters that
+/// are secrets never reach the logs; the raw path only for unmatched requests.
+pub(crate) fn logged_path(req: &Request) -> String {
+    req.extensions()
+        .get::<MatchedPath>()
+        .map_or_else(|| req.uri().path().to_owned(), |m| m.as_str().to_owned())
+}
+
 /// Reuses or generates `X-Request-Id`, wraps the request in a span and echoes the header.
 pub async fn request_layer(req: Request, next: Next) -> Response {
     let request_id = req
@@ -31,10 +39,11 @@ pub async fn request_layer(req: Request, next: Next) -> Response {
         .filter(|v| !v.is_empty() && v.len() <= 128)
         .map(str::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let path = logged_path(&req);
     let span = tracing::info_span!(
         "request",
         method = %req.method(),
-        path = req.uri().path(),
+        path = %path,
         request_id = %request_id,
         status = tracing::field::Empty,
         duration_ms = tracing::field::Empty,
