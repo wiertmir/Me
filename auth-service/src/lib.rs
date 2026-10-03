@@ -78,6 +78,30 @@ pub fn build_state(cfg: Config) -> anyhow::Result<(AppState, Option<String>)> {
     ))
 }
 
+/// The `reset-password` command: the way back in for an admin who is locked out. Gives `username` a new
+/// one-time password that must be changed at the next sign-in, through the same code path as the admin
+/// reset (so every session, token and app password of that user is revoked), and returns it. Works on
+/// the database file directly, whether or not the server is running (SQLite WAL; one short transaction).
+pub fn reset_password(cfg: &Config, username: &str) -> anyhow::Result<String> {
+    let path = cfg.data_dir.join("auth.db");
+    anyhow::ensure!(path.exists(), "no database at {}", path.display());
+    let db = Db::open(&path)?;
+    let failed = |e: ApiError| anyhow::anyhow!("database error: {}", e.message);
+    let name = users::normalize(username);
+    let user = users::find_by_login(&db, &name)
+        .map_err(failed)?
+        .map(|(u, _)| u)
+        .filter(|u| u.username == name)
+        .ok_or_else(|| anyhow::anyhow!("no user named {name:?}"))?;
+    let password = crypto::temporary_password();
+    let hash = crypto::hash_password(&password);
+    anyhow::ensure!(
+        users::admin_reset(&db, user.id, &hash).map_err(failed)?,
+        "no user named {name:?}"
+    );
+    Ok(password)
+}
+
 #[derive(Serialize, ToSchema)]
 struct Health {
     status: &'static str,

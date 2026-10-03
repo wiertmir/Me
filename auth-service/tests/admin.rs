@@ -468,6 +468,45 @@ async fn admin_reset_password_replaces_password_and_revokes_everything() {
     assert_eq!(left, 0);
 }
 
+/// The recovery command, run against the data directory of a server that is up.
+#[tokio::test]
+async fn reset_password_command_sets_a_one_time_password_and_revokes_sessions() {
+    let app = TestApp::spawn().await;
+    let old_session = app.admin_session().await;
+    let run = |name: &'static str| {
+        let cfg = app.state.cfg.clone();
+        tokio::task::spawn_blocking(move || auth_service::reset_password(&cfg, name))
+    };
+
+    let password = run(" Wiertmir ").await.unwrap().unwrap();
+    assert_eq!(password.len(), 16);
+    assert_eq!(
+        me_status(&app, &old_session).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        code(&signin(&app, "wiertmir", PW).await),
+        (401, Some("invalid_credentials"))
+    );
+    let (s, b) = signin(&app, "wiertmir", &password).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["user"]["must_change_password"], true);
+
+    let e = run("nobody").await.unwrap().unwrap_err();
+    assert!(e.to_string().contains("no user"), "{e}");
+    // An email address is not a username here.
+    assert!(run("wiertmir@localhost").await.unwrap().is_err());
+}
+
+#[test]
+fn reset_password_command_does_not_create_a_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = auth_service::Config::for_tests(dir.path().to_path_buf(), support::SERVICE_SECRET);
+    let e = auth_service::reset_password(&cfg, "wiertmir").unwrap_err();
+    assert!(e.to_string().contains("no database"), "{e}");
+    assert!(!dir.path().join("auth.db").exists());
+}
+
 #[tokio::test]
 async fn admin_reset_gives_social_only_user_a_password() {
     let app = TestApp::spawn().await;
