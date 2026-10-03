@@ -14,6 +14,7 @@ use crate::{
     config::SignupMode,
     crypto,
     email_tokens::{self, Purpose},
+    extract::ApiJson,
     mail::Email,
     users::{self, NewUser, User},
 };
@@ -96,16 +97,25 @@ pub(crate) fn valid_email(e: &str) -> bool {
         && !e.contains(|c: char| c.is_whitespace() || c.is_control() || c == '<' || c == '>')
 }
 
-/// Self sign-up. With mail enabled the account must verify its email before signing in.
-#[utoipa::path(post, path = "/api/signup", request_body = SignupRequest, responses(
-    (status = 201, body = SignupResponse),
-    (status = 403, description = "signup_disabled", body = ErrorBody),
-    (status = 409, description = "username or email taken", body = ErrorBody),
-    (status = 422, body = ErrorBody),
-))]
+/// Sign up
+///
+/// Self sign-up. With mail enabled the account must verify its email address before it can sign in.
+#[utoipa::path(
+    post, path = "/api/signup",
+    tag = "auth",
+    request_body(content = SignupRequest, example = json!({"username": "alice", "email": "alice@example.com", "password": "correct horse battery staple", "display_name": "Alice"})),
+    security(("service_secret" = [])),
+    responses(
+    (status = 201, description = "account created; `verification_required` says whether a verification mail was sent", body = SignupResponse),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+    (status = 403, description = "`signup_disabled`: self sign-up is switched off", body = ErrorBody),
+    (status = 409, description = "`conflict`: username or email already in use", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, invalid username (3-32 of a-z 0-9 . _ -), invalid email, password shorter than 12 characters or longer than 1024 bytes, or display name over 100 characters", body = ErrorBody),
+)
+)]
 async fn signup(
     State(s): State<AppState>,
-    Json(req): Json<SignupRequest>,
+    ApiJson(req): ApiJson<SignupRequest>,
 ) -> Result<(StatusCode, Json<SignupResponse>), ApiError> {
     if s.cfg.signup == SignupMode::Disabled {
         return Err(ApiError::new(
@@ -174,14 +184,24 @@ struct TokenRequest {
     token: String,
 }
 
-/// Confirms an email address with the token from the verification mail (single use).
-#[utoipa::path(post, path = "/api/email/verify", request_body = TokenRequest, responses(
-    (status = 204),
-    (status = 400, description = "invalid_token", body = ErrorBody),
-))]
+/// Verify an email address
+///
+/// Confirms an email address with the single-use token from the verification mail.
+#[utoipa::path(
+    post, path = "/api/email/verify",
+    tag = "auth",
+    request_body(content = TokenRequest, example = json!({"token": "k3T9v2Hq0sZb1m8Y4pJx7WcD5nRfA6eLgUoQiVtXyBs"})),
+    security(("service_secret" = [])),
+    responses(
+    (status = 204, description = "email address verified"),
+    (status = 400, description = "`invalid_token`: unknown, expired or already used token", body = ErrorBody),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+    (status = 422, description = "`validation`: the body is missing or malformed, or a field is invalid (see `message`)", body = ErrorBody),
+)
+)]
 async fn verify_email(
     State(s): State<AppState>,
-    Json(req): Json<TokenRequest>,
+    ApiJson(req): ApiJson<TokenRequest>,
 ) -> Result<StatusCode, ApiError> {
     let id =
         email_tokens::consume(&s.db, &req.token, Purpose::Verify)?.ok_or_else(invalid_token)?;
@@ -225,15 +245,25 @@ async fn mail_target(s: &AppState, email: &str) -> Result<Option<User>, ApiError
         .filter(|u| u.email == email && !u.disabled))
 }
 
-/// Sends a fresh verification mail if the account exists and is unverified. Always 204.
-#[utoipa::path(post, path = "/api/email/resend", request_body = EmailRequest, responses(
-    (status = 204),
-    (status = 429, body = ErrorBody),
-))]
+/// Resend the verification mail
+///
+/// Sends a fresh verification mail if the account exists and is unverified. Always 204, so it does not reveal which addresses exist.
+#[utoipa::path(
+    post, path = "/api/email/resend",
+    tag = "auth",
+    request_body(content = EmailRequest, example = json!({"email": "alice@example.com"})),
+    security(("service_secret" = [])),
+    responses(
+    (status = 204, description = "accepted"),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+    (status = 422, description = "`validation`: the body is missing or malformed, or a field is invalid (see `message`)", body = ErrorBody),
+    (status = 429, description = "`rate_limited`: too many requests for this address or client; see `Retry-After`", body = ErrorBody),
+)
+)]
 async fn resend_verification(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<EmailRequest>,
+    ApiJson(req): ApiJson<EmailRequest>,
 ) -> Result<StatusCode, SigninError> {
     let email = users::normalize(&req.email);
     limit_mail(&s, "resend", &headers, &email)?;
@@ -245,15 +275,25 @@ async fn resend_verification(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Mails a reset link if the account exists (and mail is enabled). Always 204.
-#[utoipa::path(post, path = "/api/password/forgot", request_body = EmailRequest, responses(
-    (status = 204),
-    (status = 429, body = ErrorBody),
-))]
+/// Request a password reset mail
+///
+/// Mails a reset link if the account exists and mail is enabled. Always 204, so it does not reveal which addresses exist.
+#[utoipa::path(
+    post, path = "/api/password/forgot",
+    tag = "auth",
+    request_body(content = EmailRequest, example = json!({"email": "alice@example.com"})),
+    security(("service_secret" = [])),
+    responses(
+    (status = 204, description = "accepted"),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+    (status = 422, description = "`validation`: the body is missing or malformed, or a field is invalid (see `message`)", body = ErrorBody),
+    (status = 429, description = "`rate_limited`: too many requests for this address or client; see `Retry-After`", body = ErrorBody),
+)
+)]
 async fn forgot_password(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<EmailRequest>,
+    ApiJson(req): ApiJson<EmailRequest>,
 ) -> Result<StatusCode, SigninError> {
     if !s.mail.enabled() {
         return Ok(StatusCode::NO_CONTENT);
@@ -275,15 +315,24 @@ struct ResetRequest {
     new_password: String,
 }
 
-/// Sets a new password from a reset token (single use). Revokes all sign-in state (sessions, tokens, tickets).
-#[utoipa::path(post, path = "/api/password/reset", request_body = ResetRequest, responses(
-    (status = 204),
-    (status = 400, description = "invalid_token", body = ErrorBody),
-    (status = 422, body = ErrorBody),
-))]
+/// Reset a password
+///
+/// Sets a new password from a single-use reset token. Revokes all sign-in state: sessions, refresh tokens and tickets.
+#[utoipa::path(
+    post, path = "/api/password/reset",
+    tag = "auth",
+    request_body(content = ResetRequest, example = json!({"token": "k3T9v2Hq0sZb1m8Y4pJx7WcD5nRfA6eLgUoQiVtXyBs", "new_password": "another long passphrase"})),
+    security(("service_secret" = [])),
+    responses(
+    (status = 204, description = "password changed"),
+    (status = 400, description = "`invalid_token`: unknown, expired or already used token", body = ErrorBody),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, new password shorter than 12 characters or longer than 1024 bytes", body = ErrorBody),
+)
+)]
 async fn reset_password(
     State(s): State<AppState>,
-    Json(req): Json<ResetRequest>,
+    ApiJson(req): ApiJson<ResetRequest>,
 ) -> Result<StatusCode, ApiError> {
     // Validated first so a typo does not burn the token.
     crypto::validate_password(&req.new_password)?;

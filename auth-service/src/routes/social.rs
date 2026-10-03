@@ -17,7 +17,9 @@ use super::client_info;
 use crate::{
     AppState,
     config::SignupMode,
-    crypto, providers,
+    crypto,
+    extract::ApiJson,
+    providers,
     sessions::{self, SessionUser},
     social_store,
     users::{self, NewUser, User},
@@ -94,8 +96,18 @@ fn redirect_uri(s: &AppState, provider: &str) -> String {
     format!("{}/social/{provider}/callback", trimmed(&s.cfg.issuer))
 }
 
+/// List social providers
+///
 /// Providers with configured credentials, in a fixed order.
-#[utoipa::path(get, path = "/api/providers", responses((status = 200, body = Vec<String>), (status = 401, body = ErrorBody)))]
+#[utoipa::path(
+    get, path = "/api/providers",
+    tag = "social",
+    security(("service_secret" = [])),
+    responses(
+    (status = 200, description = "provider names, e.g. `google`, `github`, `microsoft`", body = Vec<String>),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+)
+)]
 async fn list_providers(State(s): State<AppState>) -> Json<Vec<&'static str>> {
     Json(
         providers::PROVIDERS
@@ -115,17 +127,26 @@ struct LinkIntentResponse {
     start_url: String,
 }
 
-/// Creates a one-time (10 minute) intent so the signed-in user can link a provider from the account page.
-#[utoipa::path(post, path = "/api/social/link-intent", request_body = LinkIntentRequest, responses(
-    (status = 200, body = LinkIntentResponse),
-    (status = 401, body = ErrorBody),
-    (status = 403, body = ErrorBody),
-    (status = 404, description = "not_found (provider not configured)", body = ErrorBody),
-))]
+/// Start linking a provider
+///
+/// Creates a one-time (10 minute) intent so the signed-in user can link a provider from the account page. Send the browser to `start_url`.
+#[utoipa::path(
+    post, path = "/api/social/link-intent",
+    tag = "social",
+    request_body(content = LinkIntentRequest, example = json!({"provider": "github"})),
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 200, description = "where to send the browser", body = LinkIntentResponse),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 403, description = "`password_change_required`: the user must change their temporary password first", body = ErrorBody),
+    (status = 404, description = "`not_found`: the provider is not configured", body = ErrorBody),
+    (status = 422, description = "`validation`: the body is missing or malformed, or a field is invalid (see `message`)", body = ErrorBody),
+)
+)]
 async fn link_intent(
     State(s): State<AppState>,
     me: SessionUser,
-    Json(req): Json<LinkIntentRequest>,
+    ApiJson(req): ApiJson<LinkIntentRequest>,
 ) -> Result<Json<LinkIntentResponse>, ApiError> {
     if configured(&s, &req.provider).is_none() {
         return Err(ApiError::new(
@@ -152,10 +173,17 @@ struct StartParams {
     link: Option<String>,
 }
 
-/// Redirects the browser to the provider (state + PKCE) and sets the `me_social_state` cookie.
-#[utoipa::path(get, path = "/social/{provider}/start", params(StartParams, ("provider" = String, Path)), responses(
-    (status = 302, description = "to the provider, or to the web app with an error"),
-))]
+/// Start a social sign-in
+///
+/// Redirects the browser to the provider (state + PKCE) and sets the `me_social_state` cookie. Failures
+/// redirect to the web app with an `error` query parameter. Meant for the user's browser; no service secret.
+#[utoipa::path(
+    get, path = "/social/{provider}/start",
+    tag = "social",
+    params(StartParams, ("provider" = String, Path, description = "`google`, `github` or `microsoft`")),
+    security(()),
+    responses((status = 302, description = "to the provider, or to the web app with an error"))
+)]
 async fn start(
     State(s): State<AppState>,
     Path(provider): Path<String>,
@@ -244,10 +272,17 @@ impl From<ApiError> for Fail {
     }
 }
 
-/// Provider redirect target. Applies the sign-in / link rules and ends at the web app.
-#[utoipa::path(get, path = "/social/{provider}/callback", params(CallbackParams, ("provider" = String, Path)), responses(
-    (status = 302, description = "to the web app: a ticket on success, an error code otherwise"),
-))]
+/// Social provider callback
+///
+/// The provider's redirect target. Applies the sign-in and link rules and ends at the web app with a
+/// one-time `ticket` (see `POST /api/social/exchange`) or an `error` code. No service secret.
+#[utoipa::path(
+    get, path = "/social/{provider}/callback",
+    tag = "social",
+    params(CallbackParams, ("provider" = String, Path, description = "`google`, `github` or `microsoft`")),
+    security(()),
+    responses((status = 302, description = "to the web app: a ticket on success, an error code otherwise"))
+)]
 async fn callback(
     State(s): State<AppState>,
     Path(provider): Path<String>,
@@ -462,17 +497,25 @@ struct ExchangeResponse {
     challenge: Option<String>,
 }
 
-/// Trades the one-time ticket from the callback redirect for a session.
-// Social accounts are not blocked by email verification: a ticket only exists for a user with a linked identity.
-#[utoipa::path(post, path = "/api/social/exchange", request_body = ExchangeRequest, responses(
-    (status = 200, body = ExchangeResponse),
-    (status = 400, description = "invalid_ticket (unknown, expired or used)", body = ErrorBody),
-    (status = 401, body = ErrorBody),
-))]
+/// Exchange a social sign-in ticket
+///
+/// Trades the one-time ticket from the callback redirect for a session. Social accounts are not blocked by email verification.
+#[utoipa::path(
+    post, path = "/api/social/exchange",
+    tag = "social",
+    request_body(content = ExchangeRequest, example = json!({"ticket": "k3T9v2Hq0sZb1m8Y4pJx7WcD5nRfA6eLgUoQiVtXyBs"})),
+    security(("service_secret" = [])),
+    responses(
+    (status = 200, description = "signed in", body = ExchangeResponse),
+    (status = 400, description = "`invalid_ticket`: unknown, expired or already used ticket", body = ErrorBody),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+    (status = 422, description = "`validation`: the body is missing or malformed, or a field is invalid (see `message`)", body = ErrorBody),
+)
+)]
 async fn exchange(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<ExchangeRequest>,
+    ApiJson(req): ApiJson<ExchangeRequest>,
 ) -> Result<Json<ExchangeResponse>, ApiError> {
     let invalid = || {
         ApiError::new(

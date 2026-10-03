@@ -29,10 +29,12 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(revoke))
 }
 
-/// RFC 6749 error response.
+/// RFC 6749 error response, used by the OAuth endpoints instead of the `/api` error shape.
 #[derive(Serialize, ToSchema)]
 struct OAuthError {
+    /// `invalid_request`, `invalid_client`, `invalid_grant`, `unsupported_grant_type` or `server_error`.
     error: &'static str,
+    /// Human-readable detail.
     error_description: String,
 }
 
@@ -69,21 +71,32 @@ fn no_cache() -> [(header::HeaderName, &'static str); 2] {
 
 #[derive(Deserialize, ToSchema)]
 struct TokenRequest {
+    /// `authorization_code` or `refresh_token`.
     grant_type: Option<String>,
     client_id: Option<String>,
+    /// Authorization code (grant `authorization_code`).
     code: Option<String>,
+    /// Must equal the `redirect_uri` of the authorization request (grant `authorization_code`).
     redirect_uri: Option<String>,
+    /// PKCE verifier, 43-128 unreserved characters (grant `authorization_code`).
     code_verifier: Option<String>,
+    /// Refresh token (grant `refresh_token`).
     refresh_token: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
 struct TokenResponse {
+    /// ES256 JWT, valid for `expires_in` seconds.
     access_token: String,
+    /// Always `Bearer`.
     token_type: &'static str,
+    /// Access token lifetime in seconds.
     expires_in: i64,
+    /// Single use: each refresh returns a new one.
     refresh_token: String,
+    /// Granted scopes, space separated.
     scope: String,
+    /// Present for the `authorization_code` grant when `openid` was granted.
     #[serde(skip_serializing_if = "Option::is_none")]
     id_token: Option<String>,
 }
@@ -98,11 +111,25 @@ fn valid_verifier(v: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
 }
 
-/// Token endpoint (public clients, form-encoded): authorization_code with PKCE, and refresh_token with rotation.
-#[utoipa::path(post, path = "/oauth/token", request_body(content = TokenRequest, content_type = "application/x-www-form-urlencoded"), responses(
-    (status = 200, body = TokenResponse),
-    (status = 400, body = OAuthError),
-))]
+/// Exchange a code or refresh token for tokens
+///
+/// Public clients, form-encoded: `authorization_code` with PKCE, and `refresh_token` with rotation.
+/// Errors follow RFC 6749 and are never in the `/api` shape. Public; no service secret.
+#[utoipa::path(
+    post, path = "/oauth/token",
+    tag = "oauth",
+    request_body(
+        content = TokenRequest,
+        content_type = "application/x-www-form-urlencoded",
+        example = json!({"grant_type": "authorization_code", "client_id": "my-client", "code": "k3T9v2Hq0sZb1m8Y4pJx7WcD5nRfA6eLgUoQiVtXyBs", "redirect_uri": "http://127.0.0.1:5000/callback", "code_verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"})
+    ),
+    security(()),
+    responses(
+        (status = 200, description = "tokens issued", body = TokenResponse),
+        (status = 400, description = "RFC 6749 error: `invalid_request` (also a malformed form body), `invalid_client`, `invalid_grant`, `unsupported_grant_type`", body = OAuthError),
+        (status = 500, description = "`server_error`", body = OAuthError),
+    )
+)]
 async fn token(
     State(s): State<AppState>,
     form: Result<Form<TokenRequest>, FormRejection>,
@@ -227,8 +254,19 @@ fn invalid_token(has_token: bool) -> Response {
         .into_response()
 }
 
-/// Claims about the user behind a bearer access token.
-#[utoipa::path(get, path = "/oauth/userinfo", responses((status = 200, body = serde_json::Value), (status = 401, description = "invalid_token")))]
+/// OpenID Connect UserInfo
+///
+/// Claims about the user behind a bearer access token: `sub`, `preferred_username`, `name`, and with the
+/// `email` scope `email` and `email_verified`. No service secret; the access token is the credential.
+#[utoipa::path(
+    get, path = "/oauth/userinfo",
+    tag = "oauth",
+    security(("access_token" = [])),
+    responses(
+        (status = 200, description = "the claims", body = serde_json::Value),
+        (status = 401, description = "missing, invalid or expired access token; see the `WWW-Authenticate` header (`invalid_token`)"),
+    )
+)]
 async fn userinfo(State(s): State<AppState>, headers: HeaderMap) -> Response {
     let Some(token) = headers
         .get(header::AUTHORIZATION)
@@ -263,12 +301,26 @@ async fn userinfo(State(s): State<AppState>, headers: HeaderMap) -> Response {
 
 #[derive(Deserialize, ToSchema)]
 struct RevokeRequest {
+    /// A refresh token; its whole family is revoked.
     token: Option<String>,
     client_id: Option<String>,
 }
 
-/// RFC 7009 revocation of a refresh token's whole family. Always 200.
-#[utoipa::path(post, path = "/oauth/revoke", request_body(content = RevokeRequest, content_type = "application/x-www-form-urlencoded"), responses((status = 200)))]
+/// Revoke a refresh token
+///
+/// RFC 7009 revocation of a refresh token's whole family. Always 200, so it does not reveal whether the
+/// token existed. Public; no service secret.
+#[utoipa::path(
+    post, path = "/oauth/revoke",
+    tag = "oauth",
+    request_body(
+        content = RevokeRequest,
+        content_type = "application/x-www-form-urlencoded",
+        example = json!({"token": "k3T9v2Hq0sZb1m8Y4pJx7WcD5nRfA6eLgUoQiVtXyBs", "client_id": "my-client"})
+    ),
+    security(()),
+    responses((status = 200, description = "accepted (or the token was unknown)"))
+)]
 async fn revoke(
     State(s): State<AppState>,
     form: Result<Form<RevokeRequest>, FormRejection>,

@@ -14,6 +14,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use super::client_info;
 use crate::{
     AppState, crypto,
+    extract::ApiJson,
     sessions::{self, PendingUser},
     users::{self, User},
 };
@@ -34,6 +35,7 @@ struct SigninRequest {
 
 #[derive(Serialize, ToSchema)]
 struct SigninResponse {
+    /// Bearer token for user-scoped operations; valid 30 days.
     session_token: String,
     user: User,
 }
@@ -91,18 +93,26 @@ async fn verify(s: &AppState, pw: String, hash: Option<String>) -> bool {
     .unwrap_or(false)
 }
 
-/// Password sign-in. Locked keys answer 429 without counting as failures.
-#[utoipa::path(post, path = "/api/signin", request_body = SigninRequest, responses(
-    (status = 200, body = SigninResponse),
-    (status = 401, description = "invalid credentials", body = ErrorBody),
-    (status = 403, description = "email_not_verified (only after a correct password)", body = ErrorBody),
-    (status = 422, body = ErrorBody),
-    (status = 429, description = "rate limited; see Retry-After", body = ErrorBody),
-))]
+/// Sign in with a password
+///
+/// Username or email plus password. Locked keys answer 429 without counting as failures; the `Retry-After` header gives the wait in seconds.
+#[utoipa::path(
+    post, path = "/api/signin",
+    tag = "auth",
+    request_body(content = SigninRequest, example = json!({"login": "alice", "password": "correct horse battery staple"})),
+    security(("service_secret" = [])),
+    responses(
+    (status = 200, description = "signed in; `session_token` is the bearer token for user-scoped operations", body = SigninResponse),
+    (status = 401, description = "`invalid_credentials`: unknown login or wrong password; `unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+    (status = 403, description = "`email_not_verified`: the password is correct but the email address is not verified (only when mail is configured)", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, or password longer than 1024 bytes", body = ErrorBody),
+    (status = 429, description = "`rate_limited`: too many failed attempts; see `Retry-After`", body = ErrorBody),
+)
+)]
 async fn signin(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<SigninRequest>,
+    ApiJson(req): ApiJson<SigninRequest>,
 ) -> Result<Json<SigninResponse>, SigninError> {
     crypto::check_password_size(&req.password)?;
     let (ip, ua) = client_info(&headers);
@@ -150,8 +160,18 @@ async fn signin(
     }))
 }
 
+/// Sign out
+///
 /// Ends the current session. Allowed while a password change is pending.
-#[utoipa::path(post, path = "/api/signout", responses((status = 204), (status = 401, body = ErrorBody)))]
+#[utoipa::path(
+    post, path = "/api/signout",
+    tag = "auth",
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 204, description = "session ended"),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+)
+)]
 async fn signout(
     State(s): State<AppState>,
     PendingUser(me): PendingUser,
@@ -167,17 +187,25 @@ struct ChangePasswordRequest {
     new_password: String,
 }
 
-/// Changes the password, clears the forced-change flag and revokes the user's other sessions.
-#[utoipa::path(post, path = "/api/password/change", request_body = ChangePasswordRequest, responses(
-    (status = 204),
-    (status = 401, body = ErrorBody),
-    (status = 422, body = ErrorBody),
-    (status = 429, body = ErrorBody),
-))]
+/// Change the password
+///
+/// Sets a new password, clears the forced-change flag and revokes the user's other sessions. Allowed while a password change is pending.
+#[utoipa::path(
+    post, path = "/api/password/change",
+    tag = "auth",
+    request_body(content = ChangePasswordRequest, example = json!({"current_password": "correct horse battery staple", "new_password": "another long passphrase"})),
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 204, description = "password changed"),
+    (status = 401, description = "`invalid_credentials`: the current password is wrong; `unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, new password shorter than 12 characters, or a password longer than 1024 bytes", body = ErrorBody),
+    (status = 429, description = "`rate_limited`: too many failed attempts; see `Retry-After`", body = ErrorBody),
+)
+)]
 async fn change_password(
     State(s): State<AppState>,
     PendingUser(me): PendingUser,
-    Json(req): Json<ChangePasswordRequest>,
+    ApiJson(req): ApiJson<ChangePasswordRequest>,
 ) -> Result<StatusCode, SigninError> {
     crypto::check_password_size(&req.current_password)?;
     crypto::validate_password(&req.new_password)?;

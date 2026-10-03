@@ -3,6 +3,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod email_tokens;
+pub mod extract;
 pub mod logging;
 pub mod mail;
 pub mod oauth_store;
@@ -21,6 +22,7 @@ use axum::{Json, Router, http::StatusCode, middleware};
 use common::ApiError;
 use serde::Serialize;
 use utoipa::{OpenApi as _, ToSchema};
+
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 pub use config::Config;
@@ -81,26 +83,40 @@ struct Health {
     status: &'static str,
 }
 
-/// Liveness probe. Public: no service secret.
-#[utoipa::path(get, path = "/health", responses((status = 200, body = Health)))]
+/// Liveness probe
+///
+/// Public: no service secret.
+#[utoipa::path(get, path = "/health", security(()), responses((status = 200, description = "the service is up", body = Health)))]
 async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
 }
-
-#[derive(utoipa::OpenApi)]
-#[openapi(info(title = "Me auth-service", version = "0.1.0"))]
-struct ApiDoc;
 
 async fn not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such route")
 }
 
+/// Only `/api/*` answers with the JSON error shape; the RFC endpoints keep the framework default.
+async fn method_not_allowed(uri: axum::http::Uri) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if uri.path().starts_with("/api/") {
+        ApiError::new(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+            "method not allowed on this route",
+        )
+        .into_response()
+    } else {
+        StatusCode::METHOD_NOT_ALLOWED.into_response()
+    }
+}
+
 pub fn app(state: AppState) -> Router {
-    let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
+    let (router, api) = OpenApiRouter::with_openapi(openapi::ApiDoc::openapi())
         .routes(routes!(health))
         .merge(routes::router())
         .split_for_parts();
     router
+        .method_not_allowed_fallback(method_not_allowed)
         .with_state(state.clone())
         .merge(openapi::routes(api))
         .fallback(not_found)

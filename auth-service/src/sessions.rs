@@ -68,6 +68,7 @@ pub struct SessionInfo {
     pub last_seen: DateTime<Utc>,
     pub user_agent: String,
     pub ip: String,
+    /// True for the session that made this request.
     pub current: bool,
 }
 

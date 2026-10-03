@@ -102,12 +102,21 @@ fn valid_challenge(c: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Starts the authorization code flow (PKCE required). Bad client or redirect_uri: 400 page, never a
-/// redirect. Other errors redirect to the client. Success redirects to the web sign-in page.
-#[utoipa::path(get, path = "/oauth/authorize", params(AuthorizeParams), responses(
-    (status = 302, description = "redirect to the sign-in page, or to the client with an error"),
-    (status = 400, description = "unknown client or redirect_uri (HTML)"),
-))]
+/// Start the authorization code flow
+///
+/// PKCE (`S256`) is required. Bad client or redirect_uri: 400 HTML page, never a redirect. Other errors
+/// redirect to the client with RFC 6749 `error` and `error_description` query parameters. Success redirects
+/// to the web sign-in page with a `challenge`. Meant for the user's browser; no service secret.
+#[utoipa::path(
+    get, path = "/oauth/authorize",
+    tag = "oauth",
+    params(AuthorizeParams),
+    security(()),
+    responses(
+        (status = 302, description = "redirect to the sign-in page, or to the client's redirect_uri with an `error`"),
+        (status = 400, description = "unknown client or redirect_uri (HTML page)", content_type = "text/html", body = String),
+    )
+)]
 async fn authorize(
     State(s): State<AppState>,
     q: Result<Query<AuthorizeParams>, QueryRejection>,
@@ -186,12 +195,20 @@ struct AuthRequestInfo {
     scope: String,
 }
 
+/// Describe an authorization request
+///
 /// What the sign-in page shows about a pending authorization request.
-#[utoipa::path(get, path = "/api/auth-requests/{challenge}", params(("challenge" = String, Path)), responses(
-    (status = 200, body = AuthRequestInfo),
-    (status = 400, description = "invalid_challenge", body = ErrorBody),
-    (status = 401, body = ErrorBody),
-))]
+#[utoipa::path(
+    get, path = "/api/auth-requests/{challenge}",
+    tag = "oauth",
+    params(("challenge" = String, Path)),
+    security(("service_secret" = [])),
+    responses(
+    (status = 200, description = "the requesting client and requested scope", body = AuthRequestInfo),
+    (status = 400, description = "`invalid_challenge`: unknown, expired or already used challenge", body = ErrorBody),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+)
+)]
 async fn get_auth_request(
     State(s): State<AppState>,
     Path(challenge): Path<String>,
@@ -211,13 +228,21 @@ struct AcceptResponse {
     redirect_to: String,
 }
 
+/// Approve an authorization request
+///
 /// The signed-in user approves the request; consumes the challenge and returns where to send the browser.
-#[utoipa::path(post, path = "/api/auth-requests/{challenge}/accept", params(("challenge" = String, Path)), responses(
-    (status = 200, body = AcceptResponse),
-    (status = 400, description = "invalid_challenge", body = ErrorBody),
-    (status = 401, body = ErrorBody),
-    (status = 403, body = ErrorBody),
-))]
+#[utoipa::path(
+    post, path = "/api/auth-requests/{challenge}/accept",
+    tag = "oauth",
+    params(("challenge" = String, Path)),
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 200, description = "where to redirect the browser", body = AcceptResponse),
+    (status = 400, description = "`invalid_challenge`: unknown, expired or already used challenge", body = ErrorBody),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 403, description = "`password_change_required`: the user must change their temporary password first", body = ErrorBody),
+)
+)]
 async fn accept_auth_request(
     State(s): State<AppState>,
     me: SessionUser,
@@ -238,8 +263,15 @@ async fn accept_auth_request(
     Ok(Json(AcceptResponse { redirect_to }))
 }
 
-/// OpenID Connect discovery document.
-#[utoipa::path(get, path = "/.well-known/openid-configuration", responses((status = 200, body = Value)))]
+/// OpenID Connect discovery document
+///
+/// Public; no service secret.
+#[utoipa::path(
+    get, path = "/.well-known/openid-configuration",
+    tag = "oauth",
+    security(()),
+    responses((status = 200, description = "OpenID Provider metadata (issuer, endpoints, supported scopes and algorithms)", body = Value))
+)]
 async fn discovery(State(s): State<AppState>) -> Json<Value> {
     let iss = s.cfg.issuer.trim_end_matches('/');
     Json(json!({
@@ -259,8 +291,15 @@ async fn discovery(State(s): State<AppState>) -> Json<Value> {
     }))
 }
 
-/// Public signing key set.
-#[utoipa::path(get, path = "/.well-known/jwks.json", responses((status = 200, body = Value)))]
+/// Public signing keys
+///
+/// The JSON Web Key Set that verifies ID tokens and access tokens. Public; no service secret.
+#[utoipa::path(
+    get, path = "/.well-known/jwks.json",
+    tag = "oauth",
+    security(()),
+    responses((status = 200, description = "JWK Set (ES256)", body = Value))
+)]
 async fn jwks(State(s): State<AppState>) -> Json<Value> {
     Json(s.signer.jwks())
 }

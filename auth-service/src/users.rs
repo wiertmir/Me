@@ -11,12 +11,17 @@ use crate::{Db, crypto};
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct User {
     pub id: Uuid,
+    /// Lower-case, 3-32 characters of `a-z 0-9 . _ -`.
     pub username: String,
+    /// Lower-case.
     pub email: String,
     pub email_verified: bool,
+    /// Empty when never set.
     pub display_name: String,
     pub is_admin: bool,
+    /// True after an admin set a temporary password; only sign-out and password change work until then.
     pub must_change_password: bool,
+    /// False for accounts created through social sign-in that never set a password.
     pub has_password: bool,
     pub disabled: bool,
     pub created_at: DateTime<Utc>,

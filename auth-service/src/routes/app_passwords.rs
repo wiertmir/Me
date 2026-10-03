@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
 };
 use chrono::{DateTime, Utc};
@@ -16,6 +16,7 @@ use crate::{
     AppState,
     app_password_store::{self as store, AppPasswordInfo},
     crypto,
+    extract::{ApiJson, PathId},
     sessions::SessionUser,
     users,
 };
@@ -42,18 +43,26 @@ struct CreateResponse {
     created_at: DateTime<Utc>,
 }
 
-/// Creates an app password. The response is the only time it is shown.
-#[utoipa::path(post, path = "/api/me/app-passwords", request_body = CreateRequest, responses(
-    (status = 201, body = CreateResponse),
-    (status = 401, body = ErrorBody),
-    (status = 403, body = ErrorBody),
-    (status = 409, description = "25 app passwords already exist", body = ErrorBody),
-    (status = 422, body = ErrorBody),
-))]
+/// Create an app password
+///
+/// The response is the only time the password is shown.
+#[utoipa::path(
+    post, path = "/api/me/app-passwords",
+    tag = "app-passwords",
+    request_body(content = CreateRequest, example = json!({"label": "Alice phone calendar"})),
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 201, description = "created; `password` is shown once", body = CreateResponse),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 403, description = "`password_change_required`: the user must change their temporary password first", body = ErrorBody),
+    (status = 409, description = "`conflict`: 25 app passwords already exist", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, or label not 1 to 64 characters", body = ErrorBody),
+)
+)]
 async fn create_app_password(
     State(s): State<AppState>,
     me: SessionUser,
-    Json(req): Json<CreateRequest>,
+    ApiJson(req): ApiJson<CreateRequest>,
 ) -> Result<(StatusCode, Json<CreateResponse>), ApiError> {
     let label = req.label.trim();
     if label.is_empty() || label.chars().count() > 64 {
@@ -82,12 +91,19 @@ async fn create_app_password(
     ))
 }
 
-/// The caller's app passwords (never the secrets).
-#[utoipa::path(get, path = "/api/me/app-passwords", responses(
-    (status = 200, body = Vec<AppPasswordInfo>),
-    (status = 401, body = ErrorBody),
-    (status = 403, body = ErrorBody),
-))]
+/// List app passwords
+///
+/// The caller's app passwords, never the secrets.
+#[utoipa::path(
+    get, path = "/api/me/app-passwords",
+    tag = "app-passwords",
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 200, description = "the app passwords", body = Vec<AppPasswordInfo>),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 403, description = "`password_change_required`: the user must change their temporary password first", body = ErrorBody),
+)
+)]
 async fn list_app_passwords(
     State(s): State<AppState>,
     me: SessionUser,
@@ -99,19 +115,26 @@ fn not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such app password")
 }
 
+/// Delete an app password
+///
 /// Deletes one of the caller's own app passwords.
-#[utoipa::path(delete, path = "/api/me/app-passwords/{id}", params(("id" = String, Path, description = "UUID")), responses(
-    (status = 204),
-    (status = 401, body = ErrorBody),
-    (status = 403, body = ErrorBody),
-    (status = 404, body = ErrorBody),
-))]
+#[utoipa::path(
+    delete, path = "/api/me/app-passwords/{id}",
+    tag = "app-passwords",
+    params(("id" = String, Path, description = "UUID")),
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 204, description = "deleted"),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 403, description = "`password_change_required`: the user must change their temporary password first", body = ErrorBody),
+    (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
+)
+)]
 async fn delete_app_password(
     State(s): State<AppState>,
     me: SessionUser,
-    Path(id): Path<String>,
+    PathId(id): PathId,
 ) -> Result<StatusCode, ApiError> {
-    let id = Uuid::parse_str(&id).map_err(|_| not_found())?;
     if !store::delete(&s.db, me.user.id, id)? {
         return Err(not_found());
     }
@@ -140,17 +163,25 @@ fn invalid_credentials() -> ApiError {
     )
 }
 
-/// Checks a username and app password for the CalDAV bridge (service secret only). Every failure
-/// gives the same 401.
-#[utoipa::path(post, path = "/api/app-passwords/verify", request_body = VerifyRequest, responses(
-    (status = 200, body = VerifyResponse),
-    (status = 401, description = "invalid credentials", body = ErrorBody),
-    (status = 429, description = "rate limited; see Retry-After", body = ErrorBody),
-))]
+/// Verify an app password
+///
+/// Checks a username and app password for the CalDAV bridge (service secret only). Every failure gives the same 401.
+#[utoipa::path(
+    post, path = "/api/app-passwords/verify",
+    tag = "app-passwords",
+    request_body(content = VerifyRequest, example = json!({"username": "alice", "password": "abcd-efgh-jklm-npqr"})),
+    security(("service_secret" = [])),
+    responses(
+    (status = 200, description = "credentials are valid", body = VerifyResponse),
+    (status = 401, description = "`invalid_credentials`: wrong username or password; `unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
+    (status = 422, description = "`validation`: the body is missing or malformed, or a field is invalid (see `message`)", body = ErrorBody),
+    (status = 429, description = "`rate_limited`: too many failed attempts; see `Retry-After`", body = ErrorBody),
+)
+)]
 async fn verify(
     State(s): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<VerifyRequest>,
+    ApiJson(req): ApiJson<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>, SigninError> {
     let (ip, _) = client_info(&headers);
     let login = users::normalize(&req.username);

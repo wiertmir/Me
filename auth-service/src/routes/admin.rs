@@ -1,17 +1,13 @@
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::StatusCode,
-};
+use axum::{Json, extract::State, http::StatusCode};
 use common::{ApiError, ErrorBody};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
-use uuid::Uuid;
 
 use super::signup::{valid_email, valid_username, validation};
 use crate::{
     AppState, crypto,
+    extract::{ApiJson, PathId},
     sessions::AdminUser,
     users::{self, FlagsOutcome, NewUser, User},
 };
@@ -27,12 +23,19 @@ fn not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such user")
 }
 
+/// List users
+///
 /// All users ordered by username.
-#[utoipa::path(get, path = "/api/admin/users", responses(
-    (status = 200, body = Vec<User>),
-    (status = 401, body = ErrorBody),
-    (status = 403, body = ErrorBody),
-))]
+#[utoipa::path(
+    get, path = "/api/admin/users",
+    tag = "admin",
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 200, description = "the users", body = Vec<User>),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 403, description = "`forbidden`: the user is not an admin; `password_change_required`: the user must change their temporary password first", body = ErrorBody),
+)
+)]
 async fn list_users(
     State(s): State<AppState>,
     _admin: AdminUser,
@@ -54,18 +57,26 @@ struct CreateUserResponse {
     temporary_password: String,
 }
 
-/// Creates a verified, non-admin user with a one-time temporary password.
-#[utoipa::path(post, path = "/api/admin/users", request_body = CreateUserRequest, responses(
-    (status = 201, body = CreateUserResponse),
-    (status = 401, body = ErrorBody),
-    (status = 403, body = ErrorBody),
-    (status = 409, description = "username or email taken", body = ErrorBody),
-    (status = 422, body = ErrorBody),
-))]
+/// Create a user
+///
+/// Creates a verified, non-admin user with a one-time temporary password that must be changed at first sign-in.
+#[utoipa::path(
+    post, path = "/api/admin/users",
+    tag = "admin",
+    request_body(content = CreateUserRequest, example = json!({"username": "alice", "email": "alice@example.com", "display_name": "Alice"})),
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 201, description = "user created; the temporary password is in the response", body = CreateUserResponse),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 403, description = "`forbidden`: the user is not an admin; `password_change_required`: the user must change their temporary password first", body = ErrorBody),
+    (status = 409, description = "`conflict`: username or email already in use", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, invalid username or email, or display name over 100 characters", body = ErrorBody),
+)
+)]
 async fn create_user(
     State(s): State<AppState>,
     AdminUser(admin): AdminUser,
-    Json(req): Json<CreateUserRequest>,
+    ApiJson(req): ApiJson<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<CreateUserResponse>), ApiError> {
     let (username, email) = (
         users::normalize(&req.username),
@@ -121,20 +132,29 @@ struct PatchUserRequest {
     is_admin: Option<bool>,
 }
 
-/// Disables/enables or promotes/demotes a user. Disabling revokes their sessions and refresh tokens.
-#[utoipa::path(patch, path = "/api/admin/users/{id}", params(("id" = Uuid, Path)), request_body = PatchUserRequest, responses(
-    (status = 200, body = User),
-    (status = 401, body = ErrorBody),
-    (status = 403, body = ErrorBody),
-    (status = 404, body = ErrorBody),
-    (status = 409, description = "last_admin", body = ErrorBody),
-    (status = 422, body = ErrorBody),
-))]
+/// Update a user
+///
+/// Disables/enables or promotes/demotes a user. Disabling revokes their sessions and refresh tokens. At least one of the fields is required.
+#[utoipa::path(
+    patch, path = "/api/admin/users/{id}",
+    tag = "admin",
+    params(("id" = Uuid, Path)),
+    request_body(content = PatchUserRequest, example = json!({"disabled": true})),
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 200, description = "the updated user", body = User),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 403, description = "`forbidden`: the user is not an admin; `password_change_required`: the user must change their temporary password first", body = ErrorBody),
+    (status = 404, description = "`not_found`: no such user (or id is not a UUID)", body = ErrorBody),
+    (status = 409, description = "`last_admin`: there must be at least one enabled admin", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, or neither `disabled` nor `is_admin` given", body = ErrorBody),
+)
+)]
 async fn patch_user(
     State(s): State<AppState>,
     AdminUser(admin): AdminUser,
-    Path(id): Path<Uuid>,
-    Json(req): Json<PatchUserRequest>,
+    PathId(id): PathId,
+    ApiJson(req): ApiJson<PatchUserRequest>,
 ) -> Result<Json<User>, ApiError> {
     if req.disabled.is_none() && req.is_admin.is_none() {
         return Err(validation("provide disabled and/or is_admin"));
@@ -160,17 +180,25 @@ struct TemporaryPassword {
     temporary_password: String,
 }
 
+/// Reset a user's password
+///
 /// Gives the user a new temporary password and revokes their sessions, refresh tokens and reset tokens.
-#[utoipa::path(post, path = "/api/admin/users/{id}/reset-password", params(("id" = Uuid, Path)), responses(
-    (status = 200, body = TemporaryPassword),
-    (status = 401, body = ErrorBody),
-    (status = 403, body = ErrorBody),
-    (status = 404, body = ErrorBody),
-))]
+#[utoipa::path(
+    post, path = "/api/admin/users/{id}/reset-password",
+    tag = "admin",
+    params(("id" = Uuid, Path)),
+    security(("service_secret" = [], "session" = [])),
+    responses(
+    (status = 200, description = "the new temporary password", body = TemporaryPassword),
+    (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 403, description = "`forbidden`: the user is not an admin; `password_change_required`: the user must change their temporary password first", body = ErrorBody),
+    (status = 404, description = "`not_found`: no such user (or id is not a UUID)", body = ErrorBody),
+)
+)]
 async fn reset_user_password(
     State(s): State<AppState>,
     AdminUser(admin): AdminUser,
-    Path(id): Path<Uuid>,
+    PathId(id): PathId,
 ) -> Result<Json<TemporaryPassword>, ApiError> {
     let temporary_password = crypto::temporary_password();
     let password_hash = super::hash(&s, temporary_password.clone()).await?;

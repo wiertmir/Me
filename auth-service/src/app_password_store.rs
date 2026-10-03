@@ -17,6 +17,7 @@ pub struct AppPasswordInfo {
     pub id: Uuid,
     pub label: String,
     pub created_at: DateTime<Utc>,
+    /// Updated at most once a minute; null if never used.
     pub last_used: Option<DateTime<Utc>>,
 }
 
