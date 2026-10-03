@@ -6,8 +6,8 @@
     <section aria-labelledby="confirm-h" class="secret">
         <h2 id="confirm-h">Link the account you just signed in to?</h2>
         <p>It will be able to sign in to this account from now on.</p>
-        <button type="button" @onclick="Confirm">Link account</button>
-        <button type="button" @onclick="Cancel">Cancel</button>
+        <button type="button" disabled="@busy" aria-busy="@(busy ? "true" : null)" @onclick="Confirm">Link account</button>
+        <button type="button" disabled="@busy" @onclick="Cancel">Cancel</button>
     </section>
 }
 <div role="status">@result</div>
@@ -16,6 +16,7 @@
     [Parameter] public EventCallback OnLinked { get; set; }
 
     private string? ticket, result;
+    private bool busy;
 
     protected override void OnInitialized() =>
         ticket = System.Web.HttpUtility.ParseQueryString(new Uri(Nav.Uri).Query)["link_ticket"] is { Length: > 0 } t ? t : null;
@@ -30,7 +31,9 @@
 
     private async Task Confirm()
     {
-        var t = ticket!;
+        // A second click before the first answer would spend the ticket twice and overwrite the result.
+        if (busy || ticket is not { } t) return;
+        busy = true;
         var r = await Call(s => Api.ConfirmLink(s, t));
         if (r is null) return;
         result = r.Ok ? "Account linked." : r.Code switch

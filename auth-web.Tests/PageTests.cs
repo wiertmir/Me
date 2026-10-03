@@ -36,6 +36,22 @@ public class PageTests : PageTest
     }
 
     [Fact]
+    public void LinkTicket_DoubleClick_ConfirmsOnce_AndKeepsTheSuccessMessage()
+    {
+        var cut = SecurityWithTicket();
+        var gate = new TaskCompletionSource();
+        Stub.Gate = gate.Task; // hold the first answer so the second click lands while it is pending
+        var button = Button(cut, "Link account");
+
+        button.Click();
+        button.Click();
+        gate.SetResult();
+
+        cut.WaitForAssertion(() => Assert.Contains("Account linked.", cut.Markup));
+        Assert.Equal(1, Stub.Count(Confirm));
+    }
+
+    [Fact]
     public void LinkTicket_Cancel_CallsNothingAndLeavesTheUrl()
     {
         var cut = SecurityWithTicket();

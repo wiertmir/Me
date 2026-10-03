@@ -19,6 +19,9 @@ public sealed class StubHandler : HttpMessageHandler
 
     public StubHandler Reply(string route, HttpStatusCode code, string json) { Routes[route] = () => (code, json); return this; }
 
+    /// <summary>When set, every answer waits for it (to keep a call pending while the test acts).</summary>
+    public Task Gate { get; set; } = Task.CompletedTask;
+
     public int Count(string route) => Requests.Count(r => $"{r.Method} {r.Path}" == route);
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -27,6 +30,7 @@ public sealed class StubHandler : HttpMessageHandler
         var key = $"{request.Method} {request.RequestUri!.AbsolutePath}";
         Requests.Add(new(request.Method.Method, request.RequestUri.AbsolutePath, body));
         var (code, json) = Routes.TryGetValue(key, out var f) ? f() : (HttpStatusCode.OK, "[]");
+        await Gate;
         return new HttpResponseMessage(code) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
     }
 }
