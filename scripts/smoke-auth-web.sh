@@ -49,6 +49,7 @@ done
 echo "== building"
 cargo build -q -p auth-service || { echo "cargo build failed"; exit 2; }
 dotnet build auth-web -v q --nologo 2>&1 | tail -3
+[ "${PIPESTATUS[0]}" -eq 0 ] || { echo "dotnet build failed"; exit 2; }
 
 echo "== starting auth-service and auth-web"
 ME_AUTH__DATA_DIR="$T/data" ME_AUTH__LOG__FORMAT=json setsid ./target/debug/auth-service auth-service/config.example.toml >"$T/svc.log" 2>&1 &
@@ -116,6 +117,29 @@ sleep 1
 grep -q "$RID" "$T/web.log" && grep -q "$RID" "$T/svc.log"; check "10 request id $RID is in both logs" $?
 grep '"signin"' "$T/svc.log" | grep -q '203.0.113.9'; check "10b service saw the forwarded client IP" $?
 
+# non-ASCII User-Agent must not break sign-in
+UA_JAR="$T/ua.jar"
+form_post "$UA_JAR" "$WEB/signin" signin -A 'Tést/1.0 ✓' --data-urlencode "Input.Login=wiertmir" --data-urlencode "Input.Password=$NEWPW"
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "11 sign-in works with a non-ASCII User-Agent" $? "$CODE $LOC"
+
+# headers on a 404
+req "$E" "$WEB/definitely-not-a-page"
+H=$(tr -d '\r' < "$T/hdr" | tr 'A-Z' 'a-z')
+echo "$H" | grep -q '^x-content-type-options: nosniff' && echo "$H" | grep -q '^content-security-policy: ' && echo "$H" | grep -q '^x-request-id: '
+check "12 404 carries security headers and X-Request-Id" $? "$CODE"
+
+# /session-expired: valid session is kept, vanished session is cleared (service restarted on an empty data dir)
+req "$UA_JAR" "$WEB/session-expired"
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ] && ! grep -qi '^set-cookie: me_auth' "$T/hdr"
+check "13a /session-expired with a valid session goes to /account and keeps the cookie" $? "$CODE $LOC"
+kill -- "-$SVC_PID" 2>/dev/null; sleep 1; rm -rf "$T/data"
+ME_AUTH__DATA_DIR="$T/data" ME_AUTH__LOG__FORMAT=json setsid ./target/debug/auth-service auth-service/config.example.toml >>"$T/svc.log" 2>&1 &
+SVC_PID=$!; PIDS+=("$SVC_PID")
+for i in $(seq 30); do curl -sf "$SVC/health" >/dev/null && break; sleep 1; done
+req "$UA_JAR" "$WEB/session-expired"
+[ "$CODE" = 302 ] && [ "$LOC" = "/signin" ] && grep -i '^set-cookie: me_auth=;' "$T/hdr" | grep -qi 'expires=Thu, 01 Jan 1970'
+check "13b /session-expired with a vanished session clears the cookie and goes to /signin" $? "$CODE $LOC"
+
 req "$E" "$WEB/signin"
 H=$(tr -d '\r' < "$T/hdr" | tr 'A-Z' 'a-z')
 echo "$H" | grep -q '^x-content-type-options: nosniff' && echo "$H" | grep -q '^referrer-policy: no-referrer' \
@@ -136,6 +160,32 @@ sleep 1
 N=$(grep -c '"level":"error"' "$T/web.log")
 [ "$N" = 1 ]; check "8b exactly one error line in the auth-web log" $? "$N lines"
 grep '"level":"error"' "$T/web.log" | grep -qi 'StackTrace\| at System\.'; [ $? -ne 0 ]; check "8c error line has no stack trace" $?
+# non-JSON 502 from the service (proxy error page) must show the unavailable page, not a 500
+setsid python3 - <<'PY' &
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def _go(self):
+        self.send_response(502); self.send_header("Content-Type", "text/html"); self.end_headers()
+        self.wfile.write(b"<html><body>Bad Gateway</body></html>")
+    do_GET = do_POST = _go
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", 8099), H).serve_forever()
+PY
+STUB_PID=$!; PIDS+=("$STUB_PID")
+ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS=http://localhost:5081 LOG_FORMAT=json DataProtection__Path="$T/dp2" \
+  AuthService__BaseUrl=http://127.0.0.1:8099 setsid dotnet run --no-build --no-launch-profile --project auth-web >"$T/web2.log" 2>&1 &
+PIDS+=("$!")
+for i in $(seq 60); do curl -s -o /dev/null "http://localhost:5081/signin" && break; sleep 1; done
+F="$T/f.jar"; W2=http://localhost:5081
+req "$F" "$W2/signin"
+TOKEN=$(grep -o 'name="__RequestVerificationToken"[^>]*value="[^"]*"' "$T/body" | head -1 | sed 's/.*value="//;s/"$//')
+req "$F" "$W2/signin" -X POST --data-urlencode "__RequestVerificationToken=$TOKEN" --data-urlencode "_handler=signin" \
+  --data-urlencode "Input.Login=wiertmir" --data-urlencode "Input.Password=x"
+C1=$CODE; L1=$LOC
+LOC=${LOC#"$W2"}
+[ "$CODE" = 302 ] && req "$F" "$W2$LOC"
+[ "$C1" != 500 ] && [ "$CODE" != 500 ] && grep -q "Service unavailable" "$T/body"
+check "14 HTML 502 from the service shows the unavailable page" $? "$C1 $L1 -> $CODE"
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "ALL PASSED"; else echo "$FAILS FAILED"; echo "--- web log tail"; tail -15 "$T/web.log"; fi

@@ -42,3 +42,24 @@ public static class LocalUrl
         return !url.Any(char.IsControl);
     }
 }
+
+public static class InteractiveRedirects
+{
+    /// <summary>
+    /// For interactive components: sends the browser to the right page for failures every user-scoped call can
+    /// return (a full page load, so the cookie can be cleared). True when it navigated.
+    /// </summary>
+    public static bool Handle(this Microsoft.AspNetCore.Components.NavigationManager nav, ApiResult r)
+    {
+        var target = r.Code switch
+        {
+            "unauthorized" => "/session-expired",
+            "password_change_required" => "/change-password",
+            "unavailable" => "/unavailable",
+            _ => null,
+        };
+        if (target is null) return false;
+        nav.NavigateTo(target, forceLoad: true);
+        return true;
+    }
+}

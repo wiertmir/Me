@@ -39,13 +39,7 @@ else
         if (SessionPrincipal.Token(principal) is not { } token) { error = "You are not signed in."; return; }
 
         var r = await Api.Me(token);
-        switch (r.Code)
-        {
-            case null: user = r.Value; break;
-            case "unavailable": Nav.NavigateTo("/unavailable", forceLoad: true); break;
-            case "password_change_required": Nav.NavigateTo("/change-password", forceLoad: true); break;
-            case "unauthorized": error = "Your session has expired."; break; // the stale cookie cannot be cleared from a circuit
-            default: error = r.Message; break;
-        }
+        if (Nav.Handle(r)) return;
+        if (r.Ok) user = r.Value; else error = r.Message;
     }
 }

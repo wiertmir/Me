@@ -13,7 +13,8 @@ public sealed class RequestIdMiddleware(RequestDelegate next)
             ? incoming
             : Guid.NewGuid().ToString();
         ctx.Items[RequestContext.ItemKey] = id;
-        ctx.Response.Headers["X-Request-Id"] = id;
+        // OnStarting: the exception handler clears the response before re-executing, eager headers would vanish.
+        ctx.Response.OnStarting(() => { ctx.Response.Headers["X-Request-Id"] = id; return Task.CompletedTask; });
         using (ScopeContext.PushProperty("RequestId", id))
         {
             await next(ctx);
@@ -31,14 +32,18 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
 
     public Task Invoke(HttpContext ctx)
     {
-        var h = ctx.Response.Headers;
-        h["X-Content-Type-Options"] = "nosniff";
-        h["Referrer-Policy"] = "no-referrer";
-        h["X-Frame-Options"] = "DENY";
-        h["Content-Security-Policy"] = Csp;
-        var path = ctx.Request.Path;
-        if (NoStorePaths.Any(p => path.Equals(p, StringComparison.OrdinalIgnoreCase)))
-            h.CacheControl = "no-store";
+        ctx.Response.OnStarting(() =>
+        {
+            var h = ctx.Response.Headers;
+            h["X-Content-Type-Options"] = "nosniff";
+            h["Referrer-Policy"] = "no-referrer";
+            h["X-Frame-Options"] = "DENY";
+            h["Content-Security-Policy"] = Csp;
+            var path = ctx.Request.Path;
+            if (NoStorePaths.Any(p => path.Equals(p, StringComparison.OrdinalIgnoreCase)))
+                h.CacheControl = "no-store";
+            return Task.CompletedTask;
+        });
         return next(ctx);
     }
 }
@@ -47,7 +52,7 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
 public sealed class MustChangeMiddleware(RequestDelegate next)
 {
     private static readonly string[] Allowed =
-        ["/change-password", "/signout", "/unavailable", "/_framework", "/_blazor", "/_content"];
+        ["/change-password", "/signout", "/unavailable", "/session-expired", "/_framework", "/_blazor", "/_content"];
 
     public Task Invoke(HttpContext ctx)
     {

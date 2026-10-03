@@ -17,6 +17,9 @@ public sealed class ClientHeadersHandler(IOptions<AuthServiceOptions> options) :
 {
     public static readonly HttpRequestOptionsKey<RequestContext> ContextKey = new("me.request-context");
 
+    // Non-ASCII or control characters make HttpClient throw, which would look like an outage.
+    private static string Ascii(string s) => string.Concat(s.Select(c => c is >= ' ' and <= '~' ? c : '?'));
+
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         request.Headers.Add("X-Service-Secret", options.Value.Secret);
@@ -24,7 +27,7 @@ public sealed class ClientHeadersHandler(IOptions<AuthServiceOptions> options) :
         {
             request.Headers.Add("X-Request-Id", ctx.RequestId);
             if (ctx.ClientIp is { } ip) request.Headers.Add("X-Forwarded-For", ip);
-            if (!string.IsNullOrEmpty(ctx.UserAgent)) request.Headers.TryAddWithoutValidation("X-Client-User-Agent", ctx.UserAgent);
+            if (!string.IsNullOrEmpty(ctx.UserAgent)) request.Headers.TryAddWithoutValidation("X-Client-User-Agent", Ascii(ctx.UserAgent));
         }
         return base.SendAsync(request, ct);
     }

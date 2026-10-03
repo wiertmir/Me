@@ -38,21 +38,30 @@ public sealed class AuthApi(HttpClient http, RequestContext context, ILogger<Aut
             using var response = await http.SendAsync(request);
             if (response.IsSuccessStatusCode)
             {
-                var value = response.Content.Headers.ContentLength == 0 || typeof(T) == typeof(object)
-                    ? default
-                    : await response.Content.ReadFromJsonAsync<T>(Json);
-                return new ApiResult<T>(true, null, null, value);
+                if (typeof(T) == typeof(object)) return new ApiResult<T>(true, null, null, default);
+                var value = await response.Content.ReadFromJsonAsync<T>(Json);
+                if (value is not null) return new ApiResult<T>(true, null, null, value);
+                return Unavailable<T>("empty or unreadable response", (int)response.StatusCode);
             }
             ErrorBody? error = null;
             try { error = await response.Content.ReadFromJsonAsync<ErrorBody>(Json); }
-            catch (JsonException) { }
-            return new ApiResult<T>(false, error?.Code ?? "error", error?.Message ?? "Unexpected response from the service.", default);
+            catch (Exception e) when (e is JsonException or NotSupportedException) { }
+            // Anything that is not the service's JSON error shape (a proxy's HTML 502, say) counts as an outage.
+            if (error is null || string.IsNullOrEmpty(error.Code))
+                return Unavailable<T>("unexpected response", (int)response.StatusCode);
+            return new ApiResult<T>(false, error.Code, error.Message, default);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or NotSupportedException)
         {
             // Type and message only: no stack trace in the log, nothing from the exception on the page.
             logger.LogError("Auth service unavailable: {ExceptionType}: {ExceptionMessage}", ex.GetType().Name, ex.Message);
             return new ApiResult<T>(false, "unavailable", "The service is not available.", default);
         }
+    }
+
+    private ApiResult<T> Unavailable<T>(string reason, int status)
+    {
+        logger.LogError("Auth service unavailable: {Reason} (HTTP {StatusCode})", reason, status);
+        return new ApiResult<T>(false, "unavailable", "The service is not available.", default);
     }
 }
