@@ -22,7 +22,7 @@ redirect_uris = ["http://127.0.0.1/callback"]
 # host = "smtp.example.com"
 # from = "Me <no-reply@example.com>"
 # port = 587
-# tls = "starttls"   # or "implicit" (port 465)
+# tls = "starttls"   # or "implicit" (port 465); "none" = unencrypted, DEV/TEST ONLY (local mail catcher)
 # username = ""
 # password = ""
 #

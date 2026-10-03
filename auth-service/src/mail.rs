@@ -27,6 +27,10 @@ impl Mailer {
         let builder = match c.tls {
             SmtpTls::Starttls => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&c.host)?,
             SmtpTls::Implicit => AsyncSmtpTransport::<Tokio1Executor>::relay(&c.host)?,
+            SmtpTls::None => {
+                tracing::warn!(host = %c.host, "smtp tls = \"none\": mail is sent unencrypted; development use only");
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&c.host)
+            }
         }
         .port(c.port);
         let builder = match (&c.username, &c.password) {

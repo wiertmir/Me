@@ -46,6 +46,8 @@ pub enum SmtpTls {
     Starttls,
     /// TLS from the first byte (usually port 465).
     Implicit,
+    /// Plain SMTP, no encryption. Local development and testing only.
+    None,
 }
 
 #[derive(Clone, Deserialize)]
