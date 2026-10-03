@@ -187,6 +187,134 @@ LOC=${LOC#"$W2"}
 [ "$C1" != 500 ] && [ "$CODE" != 500 ] && grep -q "Service unavailable" "$T/body"
 check "14 HTML 502 from the service shows the unavailable page" $? "$C1 $L1 -> $CODE"
 
+
+# ---- sign-up, verification, reset, providers, social (each section restarts auth-service on a fresh data dir)
+start_svc() { # start_svc NAME "extra TOML appended to the example config"
+  [ -n "${SVC_PID:-}" ] && kill -- "-$SVC_PID" 2>/dev/null; sleep 1
+  cp auth-service/config.example.toml "$T/$1.toml"; printf '%s\n' "$2" >>"$T/$1.toml"
+  ME_AUTH__DATA_DIR="$T/data-$1" ME_AUTH__LOG__FORMAT=json setsid ./target/debug/auth-service "$T/$1.toml" >"$T/svc-$1.log" 2>&1 &
+  SVC_PID=$!; PIDS+=("$SVC_PID")
+  for i in $(seq 30); do curl -sf "$SVC/health" >/dev/null && return; sleep 1; done
+  echo "service $1 did not start"; cat "$T/svc-$1.log"; exit 2
+}
+mail_count() { ls "$T/mail" 2>/dev/null | grep -c '\.eml$'; }
+wait_mail() { for i in $(seq 20); do [ "$(mail_count)" -ge "$1" ] && return 0; sleep 0.5; done; return 1; }
+mail_token() { # mail_token verify|reset -> the token in the newest mail's link
+  python3 - "$T/mail" "$1" <<'PY'
+import email, glob, re, sys
+msg = email.message_from_bytes(open(sorted(glob.glob(sys.argv[1] + "/*.eml"))[-1], "rb").read())
+m = re.search(r"/%s\?token=([A-Za-z0-9_-]+)" % sys.argv[2], msg.get_payload(decode=True).decode())
+print(m.group(1) if m else "")
+PY
+}
+PW1="first-smoke-password-1"; PW2="second-smoke-password-2"; PW3="third-smoke-password-3"
+SIGNUP_FIELDS() { echo --data-urlencode "Input.Username=$1" --data-urlencode "Input.Email=$2" --data-urlencode "Input.Password=$3" --data-urlencode "Input.Confirm=${4:-$3}"; }
+
+echo "== sign-up with mail disabled"
+start_svc nomail ""
+G="$T/g.jar"
+form_post "$G" "$WEB/signup" signup $(SIGNUP_FIELDS alice alice@example.test "$PW1")
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "S1a sign-up with mail disabled signs in and goes to /account" $? "$CODE $LOC"
+req "$G" "$WEB/account"
+[ "$CODE" = 200 ] && grep -q alice "$T/body"; check "S1b /account shows the new username" $? "$CODE"
+H="$T/h.jar"
+form_post "$H" "$WEB/signup" signup $(SIGNUP_FIELDS alice other@example.test "$PW1")
+[ "$CODE" = 200 ] && grep -q "That username or email is already in use" "$T/body"; check "S2a duplicate username: 200 with the conflict message" $? "$CODE"
+form_post "$H" "$WEB/signup" signup $(SIGNUP_FIELDS carol carol@example.test "$PW1" "$PW2")
+[ "$CODE" = 200 ] && grep -q "passwords do not match" "$T/body"; check "S2b mismatched confirm: message" $? "$CODE"
+form_post "$H" "$WEB/signup" signup $(SIGNUP_FIELDS carol carol@example.test "elevenchars")
+[ "$CODE" = 200 ] && grep -q 'id="password-error"[^>]*>[^<]*at least 12' "$T/body"; check "S2c 11-character password: message under the password field" $? "$CODE"
+req "$G" "$WEB/signup"
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "S2d signed-in user visiting /signup is sent to /account" $? "$CODE $LOC"
+
+echo "== mail: verification and reset"
+setsid python3 scripts/smtp-sink.py "$T/mail" 2525 >"$T/sink.log" 2>&1 &
+PIDS+=("$!")
+for i in $(seq 20); do (echo > /dev/tcp/127.0.0.1/2525) 2>/dev/null && break; sleep 0.25; done
+start_svc mail '[smtp]
+host = "127.0.0.1"
+port = 2525
+from = "Me <no-reply@example.test>"
+tls = "none"'
+J="$T/j.jar"
+form_post "$J" "$WEB/signup" signup $(SIGNUP_FIELDS bob bob@example.test "$PW1")
+[ "$CODE" = 200 ] && grep -q "Check your email to finish creating your account" "$T/body" && grep -q "Resend email" "$T/body"
+check "S3a sign-up with mail: 'check your email' page" $? "$CODE"
+wait_mail 1; check "S3b verification mail arrived in the sink" $?
+form_post "$J" "$WEB/signup" resend --data-urlencode "Input.Email=bob@example.test"
+[ "$CODE" = 200 ] && grep -q "needs verifying" "$T/body" && wait_mail 2; check "S3c resend form: confirmation and a second mail" $? "$CODE"
+VTOK=$(mail_token verify); [ -n "$VTOK" ]; check "S3d verify link found in the mail" $?
+req "$J" "$WEB/verify?token=$VTOK"
+[ "$CODE" = 200 ] && grep -q "Confirm your email" "$T/body" && grep -q 'name="Input.Token"' "$T/body"; check "S3e GET /verify only shows the confirm button" $? "$CODE"
+form_post "$J" "$WEB/signin" signin --data-urlencode "Input.Login=bob" --data-urlencode "Input.Password=$PW1"
+[ "$CODE" = 200 ] && grep -q "Verify your email before signing in" "$T/body" && ! has_cookie "$J"; check "S3f still unverified after the GET" $? "$CODE"
+form_post "$J" "$WEB/verify?token=$VTOK" verify --data-urlencode "Input.Token=$VTOK"
+[ "$CODE" = 200 ] && grep -q "Email verified" "$T/body"; check "S3g POST /verify verifies" $? "$CODE"
+form_post "$J" "$WEB/signin" signin --data-urlencode "Input.Login=bob" --data-urlencode "Input.Password=$PW1"
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "S3h sign-in works after verification" $? "$CODE $LOC"
+form_post "$E" "$WEB/verify?token=$VTOK" verify --data-urlencode "Input.Token=$VTOK"
+[ "$CODE" = 200 ] && grep -q "expired or was already used" "$T/body" && grep -q "Resend email" "$T/body"; check "S3i reused verify link: expired message with resend form" $? "$CODE"
+
+N0=$(mail_count)
+form_post "$E" "$WEB/forgot" forgot --data-urlencode "Input.Email=bob@example.test"
+[ "$CODE" = 200 ] && grep -q "sent a reset link" "$T/body"; check "S4a forgot: confirmation text" $? "$CODE"
+sed 's/value="[^"]*"//g;s/<!--Blazor[^>]*-->//' "$T/body" >"$T/forgot-known"
+wait_mail $((N0 + 1)); check "S4b forgot: reset mail arrived" $?
+form_post "$E" "$WEB/forgot" forgot --data-urlencode "Input.Email=nobody@example.test"
+sed 's/value="[^"]*"//g;s/<!--Blazor[^>]*-->//' "$T/body" >"$T/forgot-unknown"
+sleep 1
+cmp -s "$T/forgot-known" "$T/forgot-unknown" && [ "$(mail_count)" = $((N0 + 1)) ]; check "S4c unknown address: identical page, no new mail" $?
+RTOK=$(mail_token reset); [ -n "$RTOK" ]; check "S4d reset link found in the mail" $?
+req "$E" "$WEB/reset?token=$RTOK"
+[ "$CODE" = 200 ] && grep -q 'name="Input.New"' "$T/body"; check "S4e reset link shows the form" $? "$CODE"
+form_post "$E" "$WEB/reset?token=$RTOK" reset --data-urlencode "Input.Token=$RTOK" --data-urlencode "Input.New=short" --data-urlencode "Input.Confirm=short"
+[ "$CODE" = 200 ] && grep -q 'id="new-error"[^>]*>[^<]*at least 12' "$T/body"; check "S4f weak password: message under the field" $? "$CODE"
+form_post "$E" "$WEB/reset?token=$RTOK" reset --data-urlencode "Input.Token=$RTOK" --data-urlencode "Input.New=$PW2" --data-urlencode "Input.Confirm=$PW2"
+[ "$CODE" = 302 ] && [ "$LOC" = "/signin?notice=reset" ]; check "S4g token survived the weak attempt; good password redirects to /signin?notice=reset" $? "$CODE $LOC"
+req "$E" "$WEB/signin?notice=reset"
+grep -q "Password changed. Sign in with your new password" "$T/body"; check "S4h /signin shows the reset notice" $?
+form_post "$E" "$WEB/signin" signin --data-urlencode "Input.Login=bob" --data-urlencode "Input.Password=$PW1"
+[ "$CODE" = 200 ] && grep -q "Incorrect username" "$T/body"; check "S4i old password fails" $? "$CODE"
+form_post "$E" "$WEB/signin" signin --data-urlencode "Input.Login=bob" --data-urlencode "Input.Password=$PW2"
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "S4j new password works" $? "$CODE $LOC"
+form_post "$D" "$WEB/reset?token=$RTOK" reset --data-urlencode "Input.Token=$RTOK" --data-urlencode "Input.New=$PW3" --data-urlencode "Input.Confirm=$PW3"
+[ "$CODE" = 200 ] && grep -q "expired or was already used" "$T/body"; check "S4k reused reset link: expired message" $? "$CODE"
+
+echo "== providers, error codes, social ticket"
+K="$T/k.jar"
+start_svc github '[providers.github]
+client_id = "dummy-id"
+client_secret = "dummy-secret"
+auth_url = "http://127.0.0.1:9/authorize"'
+req "$K" "$WEB/signin"
+grep -q "Continue with GitHub" "$T/body" && grep -q 'href="http://localhost:8081/social/github/start"' "$T/body"
+check "S5a provider configured: GitHub link to {PublicUrl}/social/github/start" $?
+req "$K" "$WEB/signin?challenge=abc123"
+grep -q 'href="http://localhost:8081/social/github/start?challenge=abc123"' "$T/body" && grep -q 'href="/signup?challenge=abc123"' "$T/body" \
+  && grep -q 'href="/forgot?challenge=abc123"' "$T/body"; check "S5b with a challenge the links carry it" $?
+start_svc noprov ""
+req "$K" "$WEB/signin"
+! grep -q "Continue with" "$T/body" && grep -q 'name="Input.Password"' "$T/body"; check "S5c no providers: no buttons, password form still there" $?
+req "$K" "$WEB/signin?error=account_exists"
+grep -q "An account with that email already exists" "$T/body"; check "S6a ?error=account_exists shows the mapped text" $?
+req "$K" "$WEB/signin?error=%3Cscript%3Ealert(1)%3C/script%3E"
+grep -q "Please try again" "$T/body" && ! grep -q "alert(1)" "$T/body"; check "S6b unknown error code: generic message, raw value not echoed" $?
+TICKET="bogus-ticket-$RANDOM$RANDOM"
+req "$K" "$WEB/social/complete?ticket=$TICKET"
+[ "$CODE" = 302 ] && [ "$LOC" = "/signin?error=social_failed" ]; check "S7 bogus ticket redirects to /signin?error=social_failed" $? "$CODE $LOC"
+ok=0
+for u in verify reset signup forgot social/complete; do
+  req "$K" "$WEB/$u"; grep -Eqi '^cache-control: .*no-store' "$T/hdr" || { ok=1; echo "   missing on /$u"; }
+done
+check "S8 /verify /reset /signup /forgot /social/complete carry Cache-Control: no-store" $ok
+
+sleep 1
+leak=0
+for secret in "$VTOK" "$RTOK" "$TICKET" "$PW1" "$PW2" "$PW3" "$NEWPW"; do
+  if grep -qF -- "$secret" "$T"/svc-*.log "$T/svc.log" "$T/web.log"; then leak=1; echo "   secret of ${#secret} chars found in a log"; fi
+done
+check "S9 no token, ticket or password in either process's log" $leak
+
 echo
 if [ "$FAILS" -eq 0 ]; then echo "ALL PASSED"; else echo "$FAILS FAILED"; echo "--- web log tail"; tail -15 "$T/web.log"; fi
 exit "$FAILS"

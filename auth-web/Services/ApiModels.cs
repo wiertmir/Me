@@ -24,3 +24,7 @@ public record SignInResponse(string SessionToken, User User);
 public record AcceptResponse(string RedirectTo);
 
 public record ErrorBody(string Code, string Message);
+
+public record SignupResponse(User User, bool VerificationRequired);
+
+public record ExchangeResponse(string SessionToken, User User, string? Challenge);

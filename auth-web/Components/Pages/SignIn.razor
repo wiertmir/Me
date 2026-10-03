@@ -7,7 +7,9 @@
 <PageTitle>Sign in</PageTitle>
 <h1>Sign in</h1>
 
-<form method="post" @onsubmit="Submit" @formname="signin">
+@if (Notice == "reset") { <p role="status">Password changed. Sign in with your new password.</p> }
+
+<form method="post" action="/signin@(CarryQuery(Challenge, ReturnUrl))" @onsubmit="Submit" @formname="signin">
     <AntiforgeryToken />
     <div role="alert">@if (error is not null) { <p class="error">@error</p> }</div>
     <p>
@@ -21,12 +23,40 @@
     <button type="submit">Sign in</button>
 </form>
 
+<ProviderButtons Challenge="@Challenge" />
+
+@if (showResend)
+{
+    <h2>Verify your email</h2>
+    <ResendForm Email="@(Input?.Login?.Contains('@') == true ? Input.Login : null)" />
+}
+
+<p>
+    <a href="/signup@(CarryQuery(Challenge, ReturnUrl))">Create an account</a>
+    · <a href="/forgot@(CarryQuery(Challenge, ReturnUrl))">Forgot password?</a>
+</p>
+
 @code {
     [SupplyParameterFromQuery] private string? Challenge { get; set; }
     [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
-    [SupplyParameterFromForm] private SignInForm? Input { get; set; }
+    [SupplyParameterFromQuery] private string? Error { get; set; }
+    [SupplyParameterFromQuery] private string? Notice { get; set; }
+    [SupplyParameterFromForm(FormName = "signin")] private SignInForm? Input { get; set; }
 
     private string? error;
+    private bool showResend;
+
+    // Fixed texts only: the query value is looked up, never echoed.
+    private static readonly Dictionary<string, string> ErrorTexts = new()
+    {
+        ["social_failed"] = "Sign-in with that provider didn't complete. Please try again.",
+        ["account_exists"] = "An account with that email already exists. Sign in with your password, then link the provider from your account.",
+        ["signup_disabled"] = "Sign-up is not available.",
+        ["account_disabled"] = "This account is disabled.",
+        ["email_required"] = "That provider didn't share an email address, so we can't create an account.",
+        ["provider_unavailable"] = "That sign-in provider isn't available.",
+        ["email_not_verified"] = "Verify your email before signing in.",
+    };
 
     private sealed class SignInForm
     {
@@ -37,6 +67,12 @@
     protected override async Task OnInitializedAsync()
     {
         Input ??= new();
+        if (!string.IsNullOrEmpty(Error))
+        {
+            error = ErrorTexts.GetValueOrDefault(Error, "Sign-in didn't complete. Please try again.");
+            showResend = Error == "email_not_verified";
+        }
+        showResend |= Posted("resend");
         // Already signed in and arriving with a challenge: accept it without showing the form.
         if (HttpMethods.IsGet(HttpContext.Request.Method) && !string.IsNullOrEmpty(Challenge)
             && HttpContext.User.Identity?.IsAuthenticated == true && SessionToken is { } token)
@@ -55,7 +91,13 @@
         {
             if (await Redirected(r, userScoped: false)) return;
             Logger.LogWarning("Sign-in failed for {Login}: {Code}", Input.Login, r.Code);
-            error = r.Code == "invalid_credentials" ? "Incorrect username, email or password." : Describe(r);
+            showResend = r.Code == "email_not_verified";
+            error = r.Code switch
+            {
+                "invalid_credentials" => "Incorrect username, email or password.",
+                "email_not_verified" => ErrorTexts["email_not_verified"],
+                _ => Describe(r),
+            };
             return;
         }
         await SessionPrincipal.SignIn(HttpContext, r.Value!.SessionToken, r.Value.User);

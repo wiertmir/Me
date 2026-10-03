@@ -33,6 +33,20 @@ public abstract class SsrPage : ComponentBase
         }
     }
 
+    /// <summary>True when this request is a POST of the named form (so a page can tell which form was submitted).</summary>
+    protected bool Posted(string formName) =>
+        HttpMethods.IsPost(HttpContext.Request.Method) && HttpContext.Request.HasFormContentType
+        && HttpContext.Request.Form["_handler"] == formName;
+
+    /// <summary>"?challenge=…&amp;returnUrl=…" for links that must carry the pending sign-in along; "" when neither is set.</summary>
+    protected static string CarryQuery(string? challenge, string? returnUrl)
+    {
+        var q = new List<string>();
+        if (!string.IsNullOrEmpty(challenge)) q.Add("challenge=" + Uri.EscapeDataString(challenge));
+        if (LocalUrl.IsLocal(returnUrl)) q.Add("returnUrl=" + Uri.EscapeDataString(returnUrl!));
+        return q.Count > 0 ? "?" + string.Join('&', q) : "";
+    }
+
     protected static string Describe(ApiResult r) => r.Code switch
     {
         "rate_limited" => "Too many attempts. Try again in a moment.",
@@ -48,10 +62,7 @@ public abstract class SsrPage : ComponentBase
     {
         if (mustChange)
         {
-            var q = new List<string>();
-            if (!string.IsNullOrEmpty(challenge)) q.Add("challenge=" + Uri.EscapeDataString(challenge));
-            if (LocalUrl.IsLocal(returnUrl)) q.Add("returnUrl=" + Uri.EscapeDataString(returnUrl!));
-            Nav.NavigateTo("/change-password" + (q.Count > 0 ? "?" + string.Join('&', q) : ""));
+            Nav.NavigateTo("/change-password" + CarryQuery(challenge, returnUrl));
             return null;
         }
         if (!string.IsNullOrEmpty(challenge))

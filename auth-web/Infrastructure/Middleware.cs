@@ -24,7 +24,7 @@ public sealed class RequestIdMiddleware(RequestDelegate next)
 
 public sealed class SecurityHeadersMiddleware(RequestDelegate next)
 {
-    private static readonly string[] NoStorePaths = ["/signin", "/change-password", "/account"];
+    private static readonly string[] NoStorePaths = ["/signin", "/change-password", "/account", "/signup", "/verify", "/forgot", "/reset", "/social/complete", "/session-expired"];
 
     // form-action is deliberately absent: Chrome applies it to redirects, and sign-in redirects to the client's callback.
     private const string Csp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
@@ -52,7 +52,8 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
 public sealed class MustChangeMiddleware(RequestDelegate next)
 {
     private static readonly string[] Allowed =
-        ["/change-password", "/signout", "/unavailable", "/session-expired", "/_framework", "/_blazor", "/_content"];
+        ["/change-password", "/signout", "/unavailable", "/session-expired", "/verify", "/reset", "/social/complete",
+         "/_framework", "/_blazor", "/_content"];
 
     public Task Invoke(HttpContext ctx)
     {
