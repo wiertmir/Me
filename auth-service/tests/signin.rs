@@ -94,6 +94,70 @@ async fn password_change_revokes_other_sessions() {
     assert_eq!(s, StatusCode::OK);
 }
 
+/// A voluntary change keeps only the session that made it: an intruder's other grants die with the old password.
+#[tokio::test]
+async fn password_change_revokes_refresh_tokens_app_passwords_and_other_sessions() {
+    let app = TestApp::spawn().await;
+    let current = app.admin_session().await;
+    let (_, b) = signin(&app, "wiertmir", "correct horse battery").await;
+    let other = b["session_token"].as_str().unwrap().to_string();
+    let refresh = app.oauth_tokens(&current, "openid").await["refresh_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, b) = app
+        .api(
+            Method::POST,
+            "/api/me/app-passwords",
+            Some(&current),
+            json!({"label": "phone"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let app_password = b["password"].as_str().unwrap().to_string();
+    let verify = || {
+        app.api(
+            Method::POST,
+            "/api/app-passwords/verify",
+            None,
+            json!({"username": "wiertmir", "password": app_password}),
+        )
+    };
+    assert_eq!(verify().await.0, StatusCode::OK);
+
+    let (s, b) = app
+        .api(
+            Method::POST,
+            "/api/password/change",
+            Some(&current),
+            json!({"current_password": "correct horse battery", "new_password": "a brand new passphrase"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
+
+    let (s, _, b) = app
+        .token_post(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", "test-client"),
+            ("refresh_token", &refresh),
+        ])
+        .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant"))
+    );
+    assert_eq!(verify().await.0, StatusCode::UNAUTHORIZED);
+    for (token, expected) in [
+        (&other, StatusCode::UNAUTHORIZED),
+        (&current, StatusCode::OK),
+    ] {
+        let (s, _) = app
+            .api(Method::GET, "/api/me", Some(token), Value::Null)
+            .await;
+        assert_eq!(s, expected);
+    }
+}
+
 #[tokio::test]
 async fn login_is_case_and_space_insensitive() {
     let app = TestApp::spawn().await;

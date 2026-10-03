@@ -189,14 +189,16 @@ struct ChangePasswordRequest {
 
 /// Change the password
 ///
-/// Sets a new password, clears the forced-change flag and revokes the user's other sessions. Allowed while a password change is pending.
+/// Sets a new password and clears the forced-change flag. Signs the user out everywhere else: revokes
+/// their other sessions, all refresh tokens, authorization codes, pending social tickets and app
+/// passwords; only the session making the request survives. Allowed while a password change is pending.
 #[utoipa::path(
     post, path = "/api/password/change",
     tag = "auth",
     request_body(content = ChangePasswordRequest, example = json!({"current_password": "correct horse battery staple", "new_password": "another long passphrase"})),
     security(("service_secret" = [], "session" = [])),
     responses(
-    (status = 204, description = "password changed"),
+    (status = 204, description = "password changed; everything but this session revoked"),
     (status = 401, description = "`invalid_credentials`: the current password is wrong; `unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
     (status = 422, description = "`validation`: malformed body, new password shorter than 12 characters, or a password longer than 1024 bytes", body = ErrorBody),
     (status = 429, description = "`rate_limited`: too many failed attempts; see `Retry-After`", body = ErrorBody),
@@ -211,7 +213,8 @@ async fn change_password(
     crypto::validate_password(&req.new_password)?;
     let key = format!("user:{}", me.user.username);
     s.limiter.begin(&key).map_err(SigninError::Limited)?;
-    let ok = match users::password_hash(&s.db, me.user.id)? {
+    let current = users::password_hash(&s.db, me.user.id)?;
+    let ok = match current.clone() {
         Some(hash) => verify(&s, req.current_password, Some(hash)).await,
         None => false,
     };
@@ -219,8 +222,17 @@ async fn change_password(
         return Err(invalid_credentials().into());
     }
     s.limiter.clear(&key);
-    users::set_password(&s.db, me.user.id, &req.new_password, false)?;
-    sessions::delete_others(&s.db, me.user.id, me.session_id)?;
+    let new_hash = super::hash(&s, req.new_password).await?;
+    // False when the stored password changed while this request was verifying against the old one.
+    if !users::change_password(
+        &s.db,
+        me.user.id,
+        current.as_deref(),
+        &new_hash,
+        me.session_id,
+    )? {
+        return Err(invalid_credentials().into());
+    }
     tracing::info!(event = "password_changed", user_id = %me.user.id);
     Ok(StatusCode::NO_CONTENT)
 }

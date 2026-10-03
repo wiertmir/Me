@@ -642,6 +642,71 @@ async fn unlink_removes_identity_and_second_unlink_is_404() {
     assert_eq!(b["code"], "not_found");
 }
 
+/// Unlinking is how a user evicts someone who got in through that provider, so their sessions and
+/// refresh tokens go too. The current session and app passwords stay.
+#[tokio::test]
+async fn unlink_revokes_other_sessions_and_refresh_tokens_but_keeps_app_passwords() {
+    let (app, _stub) = setup(&["google"]).await;
+    let id = make_user(&app, "alice", "alice@example.org", true, true);
+    link(&app, id, "google", "g1");
+    let current = password_session(&app, "alice").await;
+    let other = password_session(&app, "alice").await;
+    let refresh = app.oauth_tokens(&other, "openid").await["refresh_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, b) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/me/app-passwords",
+            Some(&current),
+            json!({"label": "phone"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let app_password = b["password"].as_str().unwrap().to_string();
+
+    let (s, _) = app
+        .api(
+            axum::http::Method::DELETE,
+            "/api/me/identities/google",
+            Some(&current),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+
+    for (token, expected) in [
+        (&other, StatusCode::UNAUTHORIZED),
+        (&current, StatusCode::OK),
+    ] {
+        let (s, _) = app
+            .api(axum::http::Method::GET, "/api/me", Some(token), Value::Null)
+            .await;
+        assert_eq!(s, expected);
+    }
+    let (s, _, b) = app
+        .token_post(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", "test-client"),
+            ("refresh_token", &refresh),
+        ])
+        .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant"))
+    );
+    let (s, _) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/app-passwords/verify",
+            None,
+            json!({"username": "alice", "password": app_password}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
 #[tokio::test]
 async fn state_without_or_with_wrong_cookie_is_rejected() {
     let (app, stub) = setup(&["google"]).await;

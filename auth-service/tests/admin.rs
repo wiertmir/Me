@@ -360,6 +360,40 @@ async fn disabling_deletes_refresh_tokens() {
     assert_eq!(n, 0);
 }
 
+/// A sign-in ticket minted before the account was disabled must not work once it is enabled again.
+#[tokio::test]
+async fn disabling_revokes_pending_sign_in_tickets() {
+    let app = TestApp::spawn().await;
+    let admin = app.admin_session().await;
+    let (id, _) = active_user(&app, &admin, "bob").await;
+    let ticket = auth_service::social_store::create_ticket(
+        &app.state.db,
+        Uuid::parse_str(&id).unwrap(),
+        None,
+    )
+    .unwrap();
+    for disabled in [true, false] {
+        let (s, _) = call(
+            &app,
+            Method::PATCH,
+            &patch(&id),
+            &admin,
+            json!({"disabled": disabled}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let r = app
+        .api(
+            Method::POST,
+            "/api/social/exchange",
+            None,
+            json!({"ticket": ticket}),
+        )
+        .await;
+    assert_eq!(code(&r), (400, Some("invalid_ticket")));
+}
+
 #[tokio::test]
 async fn patch_validates_body_and_id() {
     let app = TestApp::spawn().await;

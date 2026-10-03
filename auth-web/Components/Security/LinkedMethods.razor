@@ -76,7 +76,7 @@
     }
 
     private void AskUnlink(string provider) =>
-        pending = new($"Unlink {Pretty(provider)} from your account? You will no longer be able to sign in with it.", "Unlink", () => Unlink(provider));
+        pending = new($"Unlink {Pretty(provider)} from your account? You will no longer be able to sign in with it. Other devices will be signed out.", "Unlink", () => Unlink(provider));
 
     private async Task Unlink(string provider)
     {

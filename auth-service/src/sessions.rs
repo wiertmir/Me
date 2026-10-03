@@ -51,16 +51,6 @@ pub fn delete(db: &Db, session_id: Uuid) -> ApiResult<()> {
     Ok(())
 }
 
-pub fn delete_others(db: &Db, user: Uuid, keep: Uuid) -> ApiResult<()> {
-    db.with(|c| {
-        c.execute(
-            "DELETE FROM sessions WHERE user_id = ?1 AND id != ?2",
-            [user.to_string(), keep.to_string()],
-        )
-    })?;
-    Ok(())
-}
-
 #[derive(Serialize, ToSchema)]
 pub struct SessionInfo {
     pub id: Uuid,

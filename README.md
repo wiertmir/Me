@@ -206,11 +206,22 @@ ports 8081 and 5080 free (`smoke-auth-web.sh` also 2525, 5081 and 8099; `browser
 
 ## Security notes for the operator
 
-- A password reset (by email link or by an admin) signs the user out everywhere: it revokes all
-  sessions, refresh tokens and app passwords.
-- Linked sign-in methods on an account with a verified email survive a password reset. After
-  recovering an account, review them on the Security page and unlink any you do not recognise.
+- What each action revokes for the account it is applied to ("grants" are refresh tokens,
+  authorization codes, and pending social sign-in and link tickets):
+
+  | Action                          | Sessions            | Grants | App passwords | Linked sign-in methods                 |
+  |---------------------------------|---------------------|--------|---------------|----------------------------------------|
+  | Password reset (email or admin) | all                 | all    | all           | removed if the email was never verified |
+  | Change password                 | all but the current | all    | all           | kept                                   |
+  | Unlink a sign-in method         | all but the current | all    | kept          | the unlinked one is removed            |
+  | Disable the account             | all                 | all    | all           | kept, unusable while disabled          |
+  | Sign out                        | the current         | none   | none          | kept                                   |
+
+- If you think someone else got into your account: first open the Security page and unlink every
+  sign-in method you do not recognise, then change your password. That order matters: a password
+  change keeps linked sign-in methods, so one left in place would let the intruder straight back in.
+  If you cannot sign in at all, use "Forgot password" (or ask an admin), then do the same two steps.
 - Access tokens are valid for 15 minutes and are not checked against the database, so an app can
-  keep using one for up to 15 minutes after a password reset or after the account is disabled.
+  keep using one for up to 15 minutes after any of the actions above.
 - A temporary password (seeded admin, admin-created user, admin reset) must be changed at the next
   sign-in; until then the user reaches only the change-password page.

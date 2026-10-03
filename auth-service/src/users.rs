@@ -127,36 +127,94 @@ pub fn create(db: &Db, new: NewUser) -> ApiResult<User> {
     get(db, id)
 }
 
-pub fn set_password(db: &Db, id: Uuid, pw: &str, must_change: bool) -> ApiResult<()> {
-    let hash = crypto::hash_password(pw);
-    db.with(|c| {
-        c.execute(
-            "UPDATE users SET password_hash = ?1, must_change_password = ?2 WHERE id = ?3",
-            params![hash, must_change, id.to_string()],
-        )
-    })?;
+/// What `revoke_sign_in_state` leaves in place. The default keeps nothing.
+#[derive(Clone, Copy, Default)]
+pub struct Keep<'a> {
+    /// Id of the one session that survives (the one making the request).
+    pub session: Option<&'a str>,
+    pub app_passwords: bool,
+}
+
+/// Every table that holds something a user can sign in or stay signed in with, and the condition that
+/// selects one user's rows (`?1` is the user id). `revoke_sign_in_state` deletes exactly these; a test
+/// fails when the schema has a table that is neither here nor on its allow-list.
+/// EVERY new credential table must be added here.
+pub const SIGN_IN_STATE: &[(&str, &str)] = &[
+    ("sessions", "user_id = ?1"),
+    ("refresh_tokens", "user_id = ?1"),
+    ("auth_codes", "user_id = ?1"),
+    ("social_states", "link_user_id = ?1"),
+    ("social_tickets", "user_id = ?1"),
+    ("social_link_tickets", "user_id = ?1"),
+    ("social_link_intents", "user_id = ?1"),
+    ("app_passwords", "user_id = ?1"),
+    ("email_tokens", "user_id = ?1 AND purpose = 'reset'"),
+];
+
+/// Revokes everything that lets someone get into the account without the password (see
+/// `SIGN_IN_STATE`), except what `keep` names. The only place that does so: password reset, admin reset,
+/// password change, unlink and disable all call it inside the transaction that makes their change.
+pub(crate) fn revoke_sign_in_state(
+    tx: &rusqlite::Connection,
+    id: &str,
+    keep: Keep,
+) -> rusqlite::Result<()> {
+    for (table, cond) in SIGN_IN_STATE {
+        let sql = format!("DELETE FROM {table} WHERE {cond}");
+        match (*table, keep) {
+            (
+                "app_passwords",
+                Keep {
+                    app_passwords: true,
+                    ..
+                },
+            ) => {}
+            (
+                "sessions",
+                Keep {
+                    session: Some(session),
+                    ..
+                },
+            ) => {
+                tx.execute(&format!("{sql} AND id != ?2"), [id, session])?;
+            }
+            _ => {
+                tx.execute(&sql, [id])?;
+            }
+        }
+    }
     Ok(())
 }
 
-/// Revokes everything that lets someone get into the account without the password. Clears, for the user:
-/// `sessions`, `refresh_tokens`, `auth_codes`, `social_tickets`, `social_link_tickets`,
-/// `social_link_intents`, link-flow `social_states`, `app_passwords`, and `reset` rows in `email_tokens`.
-/// Run inside the transaction that changes the password. EVERY new credential type must be added here.
-fn revoke_sign_in_state(tx: &rusqlite::Connection, id: &str) -> rusqlite::Result<()> {
-    for sql in [
-        "DELETE FROM sessions WHERE user_id = ?1",
-        "DELETE FROM refresh_tokens WHERE user_id = ?1",
-        "DELETE FROM auth_codes WHERE user_id = ?1",
-        "DELETE FROM social_states WHERE link_user_id = ?1",
-        "DELETE FROM social_tickets WHERE user_id = ?1",
-        "DELETE FROM social_link_tickets WHERE user_id = ?1",
-        "DELETE FROM social_link_intents WHERE user_id = ?1",
-        "DELETE FROM app_passwords WHERE user_id = ?1",
-        "DELETE FROM email_tokens WHERE user_id = ?1 AND purpose = 'reset'",
-    ] {
-        tx.execute(sql, [id])?;
-    }
-    Ok(())
+/// Voluntary change: stores the new hash (computed by the caller, off the async thread), clears the
+/// forced-change flag and, in the same transaction, revokes all sign-in state except `session`.
+/// `expected` is the hash the caller checked the current password against (None: the account had no
+/// password); false when it is no longer the stored one, in which case nothing changes.
+pub fn change_password(
+    db: &Db,
+    id: Uuid,
+    expected: Option<&str>,
+    hash: &str,
+    session: Uuid,
+) -> ApiResult<bool> {
+    let (id, session) = (id.to_string(), session.to_string());
+    db.with(|c| {
+        let tx = c.unchecked_transaction()?;
+        let n = tx.execute(
+            "UPDATE users SET password_hash = ?1, must_change_password = 0 WHERE id = ?2 AND password_hash IS ?3",
+            params![hash, id, expected],
+        )?;
+        if n == 0 {
+            return Ok(false);
+        }
+        let keep = Keep {
+            session: Some(&session),
+            app_passwords: false,
+        };
+        revoke_sign_in_state(&tx, &id, keep)?;
+        tx.commit()?;
+        Ok(true)
+    })
 }
 
 /// Whoever resets an account whose email was never proven reclaims it, so identities attached while it
@@ -187,7 +245,7 @@ pub fn complete_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<()> {
             "UPDATE users SET password_hash = ?1, must_change_password = 0, email_verified = 1 WHERE id = ?2",
             params![hash, id],
         )?;
-        revoke_sign_in_state(&tx, &id)?;
+        revoke_sign_in_state(&tx, &id, Keep::default())?;
         tx.commit()?;
         Ok(purged)
     })?;
@@ -253,7 +311,7 @@ pub enum FlagsOutcome {
 }
 
 /// Applies `disabled` / `is_admin`. Refuses to leave zero enabled admins; the check, the update and the
-/// session revocation on disable share one transaction under the single connection lock, so concurrent
+/// revocation of all sign-in state on disable share one transaction under the single connection lock, so concurrent
 /// requests cannot both pass the check.
 pub fn update_flags(
     db: &Db,
@@ -289,9 +347,7 @@ pub fn update_flags(
             params![admin, dis, id],
         )?;
         if dis {
-            tx.execute("DELETE FROM sessions WHERE user_id = ?1", [&id])?;
-            tx.execute("DELETE FROM refresh_tokens WHERE user_id = ?1", [&id])?;
-            tx.execute("DELETE FROM app_passwords WHERE user_id = ?1", [&id])?;
+            revoke_sign_in_state(&tx, &id, Keep::default())?;
         }
         tx.commit()?;
         Ok(FlagsOutcome::Updated)
@@ -312,10 +368,127 @@ pub fn admin_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<bool> {
         if n == 0 {
             return Ok(None);
         }
-        revoke_sign_in_state(&tx, &id)?;
+        revoke_sign_in_state(&tx, &id, Keep::default())?;
         tx.commit()?;
         Ok(Some(purged))
     })?;
     log_purged(&id, purged.unwrap_or(0));
     Ok(purged.is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tables `revoke_sign_in_state` deliberately leaves alone.
+    const NOT_SIGN_IN_STATE: &[&str] = &[
+        // The account itself.
+        "users",
+        // A pending OAuth authorization request belongs to a browser, not to a user: it has no user
+        // column, and it only becomes a grant (an `auth_codes` row) when a live session accepts it.
+        "auth_requests",
+        // Linked providers are sign-in methods, like the password. Resets remove them only when the
+        // email was never proven (`purge_identities_if_unverified`); unlink removes the one named.
+        "identities",
+    ];
+
+    /// Adding a table without deciding whether a reset must clear it fails here.
+    #[test]
+    fn every_table_is_revoked_or_deliberately_kept() {
+        let db = Db::open_in_memory().unwrap();
+        let tables: Vec<String> = db
+            .with(|c| {
+                c.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?
+                    .query_map([], |r| r.get(0))?
+                    .collect()
+            })
+            .unwrap();
+        assert!(!tables.is_empty());
+        for t in &tables {
+            let revoked = SIGN_IN_STATE.iter().any(|(name, _)| name == t);
+            let kept = NOT_SIGN_IN_STATE.contains(&t.as_str());
+            assert!(
+                revoked != kept,
+                "table `{t}`: add it to users::SIGN_IN_STATE, or to NOT_SIGN_IN_STATE with the reason"
+            );
+        }
+        for (name, _) in SIGN_IN_STATE {
+            assert!(tables.contains(&name.to_string()), "no table `{name}`");
+        }
+    }
+
+    /// The list is not only complete, it works: one row per table for a user, then keep-nothing.
+    #[test]
+    fn keep_nothing_empties_every_listed_table_and_keep_spares_what_it_names() {
+        let db = Db::open_in_memory().unwrap();
+        let user = |name: &str| {
+            let new = NewUser {
+                username: name.into(),
+                email: format!("{name}@example.com"),
+                email_verified: true,
+                is_admin: false,
+                must_change_password: false,
+                password_hash: None,
+            };
+            create(&db, new).unwrap().id.to_string()
+        };
+        let fill = |id: &str| {
+            db.with(|c| {
+                c.execute_batch(&format!(
+                    "INSERT INTO sessions VALUES ('s1-{id}', 'h1-{id}', '{id}', 0, 0, 9, '', '');
+                     INSERT INTO sessions VALUES ('s2-{id}', 'h2-{id}', '{id}', 0, 0, 9, '', '');
+                     INSERT INTO refresh_tokens VALUES ('r-{id}', 'f', '{id}', 'c', '', 9, 0);
+                     INSERT INTO auth_codes VALUES ('c-{id}', '{id}', 'c', 'u', '', 'x', NULL, 'f', 9, 0);
+                     INSERT INTO social_states VALUES ('st-{id}', 'google', 'v', NULL, '{id}', 9);
+                     INSERT INTO social_tickets VALUES ('t-{id}', '{id}', NULL, 9);
+                     INSERT INTO social_link_tickets VALUES ('lt-{id}', '{id}', 'google', 'sub', NULL, 9);
+                     INSERT INTO social_link_intents VALUES ('li-{id}', '{id}', 'google', 9);
+                     INSERT INTO app_passwords VALUES ('a-{id}', '{id}', 'l', 'h', 0, NULL);
+                     INSERT INTO email_tokens VALUES ('e-{id}', '{id}', 'reset', 9);"
+                ))
+            })
+            .unwrap();
+        };
+        let rows = |id: &str| -> Vec<(String, i64)> {
+            SIGN_IN_STATE
+                .iter()
+                .map(|(table, cond)| {
+                    let sql = format!("SELECT count(*) FROM {table} WHERE {cond}");
+                    let n = db.with(|c| c.query_row(&sql, [id], |r| r.get(0))).unwrap();
+                    (table.to_string(), n)
+                })
+                .collect()
+        };
+        let (a, b, bystander) = (user("a"), user("b"), user("c"));
+        for id in [&a, &b, &bystander] {
+            fill(id);
+            assert!(rows(id).iter().all(|(_, n)| *n > 0), "{:?}", rows(id));
+        }
+
+        db.with(|c| revoke_sign_in_state(c, &a, Keep::default()))
+            .unwrap();
+        assert!(rows(&a).iter().all(|(_, n)| *n == 0), "{:?}", rows(&a));
+
+        let session = format!("s1-{b}");
+        let keep = Keep {
+            session: Some(&session),
+            app_passwords: true,
+        };
+        db.with(|c| revoke_sign_in_state(c, &b, keep)).unwrap();
+        for (table, n) in rows(&b) {
+            let expected = i64::from(table == "sessions" || table == "app_passwords");
+            assert_eq!(n, expected, "{table}");
+        }
+        let left: String = db
+            .with(|c| {
+                c.query_row("SELECT id FROM sessions WHERE user_id = ?1", [&b], |r| {
+                    r.get(0)
+                })
+            })
+            .unwrap();
+        assert_eq!(left, session);
+
+        // Another user's rows are never touched.
+        assert!(rows(&bystander).iter().all(|(_, n)| *n > 0));
+    }
 }

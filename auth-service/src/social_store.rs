@@ -11,6 +11,7 @@ use uuid::Uuid;
 use crate::{
     Db,
     crypto::{random_token, sha256_hex},
+    users,
 };
 
 const STATE_SECS: i64 = 600;
@@ -224,7 +225,9 @@ pub enum Unlink {
 }
 
 /// Removes the identity unless it is the user's only way to sign in (no password, no other identity).
-pub fn unlink(db: &Db, user: Uuid, provider: &str) -> ApiResult<Unlink> {
+/// Whoever signed in through it may still hold sessions or refresh tokens, so the same transaction
+/// revokes all sign-in state except `session` (the one asking) and the app passwords.
+pub fn unlink(db: &Db, user: Uuid, provider: &str, session: Uuid) -> ApiResult<Unlink> {
     db.with(|c| {
         let tx = c.unchecked_transaction()?;
         let u = user.to_string();
@@ -253,6 +256,12 @@ pub fn unlink(db: &Db, user: Uuid, provider: &str) -> ApiResult<Unlink> {
             "DELETE FROM identities WHERE user_id = ?1 AND provider = ?2",
             [&u, provider],
         )?;
+        let session = session.to_string();
+        let keep = users::Keep {
+            session: Some(&session),
+            app_passwords: true,
+        };
+        users::revoke_sign_in_state(&tx, &u, keep)?;
         tx.commit()?;
         Ok(Unlink::Done)
     })

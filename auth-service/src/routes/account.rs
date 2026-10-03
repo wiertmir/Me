@@ -153,14 +153,17 @@ async fn list_identities(
 
 /// Unlink a social identity
 ///
-/// Unlinks a provider, unless it is the caller's only way to sign in.
+/// Unlinks a provider, unless it is the caller's only way to sign in. Also signs the user out everywhere
+/// else: it revokes their other sessions, refresh tokens, authorization codes and pending social tickets,
+/// because someone who got in through that provider may still hold them. The current session and app
+/// passwords are kept.
 #[utoipa::path(
     delete, path = "/api/me/identities/{provider}",
     tag = "account",
     params(("provider" = String, Path)),
     security(("service_secret" = [], "session" = [])),
     responses(
-    (status = 204, description = "identity unlinked"),
+    (status = 204, description = "identity unlinked; other sessions and refresh tokens revoked"),
     (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
     (status = 403, description = "`password_change_required`: the user must change their temporary password first", body = ErrorBody),
     (status = 404, description = "`not_found`: that provider is not linked", body = ErrorBody),
@@ -172,7 +175,7 @@ async fn unlink_identity(
     me: SessionUser,
     Path(provider): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    match social_store::unlink(&s.db, me.user.id, &provider)? {
+    match social_store::unlink(&s.db, me.user.id, &provider, me.session_id)? {
         Unlink::NotLinked => Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "not_found",
