@@ -1,0 +1,27 @@
+@page "/signout"
+@attribute [ExcludeFromInteractiveRouting]
+@layout AuthLayout
+@inherits SsrPage
+@inject ILogger<SignOut> Logger
+
+<PageTitle>Sign out</PageTitle>
+<h1>Sign out</h1>
+
+<form method="post" @onsubmit="Submit" @formname="signout">
+    <AntiforgeryToken />
+    <p>Sign out of your account?</p>
+    <button type="submit">Sign out</button>
+</form>
+
+@code {
+    private async Task Submit()
+    {
+        if (SessionToken is { } token)
+        {
+            var r = await Api.SignOut(token);
+            if (!r.Ok) Logger.LogInformation("API sign-out failed: {Code}", r.Code); // ignored: the cookie goes anyway
+        }
+        await HttpContext.SignOutAsync();
+        Nav.NavigateTo("/signin");
+    }
+}
