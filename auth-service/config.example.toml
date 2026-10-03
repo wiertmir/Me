@@ -4,10 +4,19 @@ issuer = "http://localhost:8081"
 web_url = "http://localhost:5080"
 listen = "127.0.0.1:8081"
 data_dir = "./data"
-# DEV ONLY: change this (via ME_AUTH__SERVICE_SECRET) for any real deployment.
+# DEV ONLY: change this (via ME_AUTH__SERVICE_SECRET) for any real deployment. The service refuses to
+# start with this exact value when `listen` is not a loopback address, and warns about it otherwise.
 service_secret = "dev-only-service-secret-change-me"
 signup = "open"          # "open" | "disabled"
 seed_username = "wiertmir"
+# Email address of the seeded admin. Read only when that user is created (first start on an empty
+# data directory); there is no way to change it afterwards. "Forgot password" mails go there once
+# [smtp] is configured. Default: <seed_username>@localhost, which cannot receive mail - with that
+# default the only way back in after a forgotten password is `auth-service <config> reset-password`.
+# seed_email = "you@example.com"
+# The `aud` claim put into access tokens. The services that accept those tokens (through `common`)
+# must be configured with the same value. Default: "me-api".
+# audience = "me-api"
 
 [log]
 format = "pretty"        # "pretty" | "json"
