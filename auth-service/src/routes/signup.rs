@@ -321,7 +321,10 @@ struct ResetRequest {
 
 /// Reset a password
 ///
-/// Sets a new password from a single-use reset token. Revokes all sign-in state: sessions, refresh tokens and tickets.
+/// Sets a new password from a single-use reset token and marks the email address verified. Revokes all
+/// sign-in state: sessions, refresh tokens, authorization codes, pending social tickets and other reset
+/// links; app passwords are deleted. Linked identities are removed too when the email address had never
+/// been verified.
 #[utoipa::path(
     post, path = "/api/password/reset",
     tag = "auth",

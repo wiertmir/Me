@@ -22,6 +22,12 @@ pub fn init(cfg: &LogConfig) {
     }
 }
 
+/// Text a client typed, made safe to log: control characters (CR, LF, escapes…) removed so it cannot
+/// forge or break log lines, and cut to 64 characters.
+pub fn for_log(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(64).collect()
+}
+
 /// The route template (`/api/auth-requests/{challenge}`) when a route matched, so path parameters that
 /// are secrets never reach the logs; the raw path only for unmatched requests.
 pub(crate) fn logged_path(req: &Request) -> String {
@@ -57,4 +63,17 @@ pub async fn request_layer(req: Request, next: Next) -> Response {
         resp.headers_mut().insert(REQUEST_ID.clone(), v);
     }
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::for_log;
+
+    #[test]
+    fn for_log_strips_control_characters_and_truncates() {
+        assert_eq!(for_log("alice"), "alice");
+        assert_eq!(for_log("a\r\nb\tc\u{0}d\u{1b}[31m\u{85}e"), "abcd[31me");
+        assert_eq!(for_log(&"é".repeat(200)), "é".repeat(64));
+        assert_eq!(for_log(""), "");
+    }
 }

@@ -13,9 +13,9 @@ else
     <form @onsubmit="Save" @onsubmit:preventDefault>
         <p>
             <label for="display-name">Display name</label>
-            <input id="display-name" @bind="displayName" maxlength="64" required autocomplete="name"
+            <input id="display-name" @bind="displayName" maxlength="100" autocomplete="name"
                    aria-describedby="@(nameError is null ? "name-hint" : "name-hint name-error")" />
-            <span id="name-hint" class="hint">1 to 64 characters.</span>
+            <span id="name-hint" class="hint">Optional. Up to 100 characters.</span>
             @if (nameError is not null) { <span id="name-error" class="error" role="alert">@nameError</span> }
         </p>
         <div class="form-actions">
@@ -52,7 +52,8 @@ else
     {
         saved = null;
         var name = displayName.Trim();
-        if (name.Length is < 1 or > 64) { nameError = "Enter a display name of 1 to 64 characters."; return; }
+        // The same rule as the service: optional, at most 100 characters (code points, as the service counts).
+        if (name.EnumerateRunes().Count() > 100) { nameError = "Use at most 100 characters."; return; }
         nameError = null;
         var r = await Call(t => Api.UpdateDisplayName(t, name));
         if (r is null) return;

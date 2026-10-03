@@ -268,11 +268,7 @@ fn invalid_token(has_token: bool) -> Response {
     )
 )]
 async fn userinfo(State(s): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(token) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-    else {
+    let Some(token) = crate::sessions::bearer(&headers) else {
         return invalid_token(false);
     };
     let Some(claims) = s.signer.verify_access(&s.cfg, token) else {

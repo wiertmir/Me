@@ -31,6 +31,23 @@ pub use db::Db;
 // ponytail: 4 concurrent hashes; tune to cores/memory if sign-in latency under load matters
 const HASH_PERMITS: usize = 4;
 
+/// The `service_secret` published in `config.example.toml`: fine on one's own machine, public knowledge
+/// anywhere else.
+pub const EXAMPLE_SERVICE_SECRET: &str = "dev-only-service-secret-change-me";
+
+/// Whether the published example secret is in use. An error when it would guard a listener that other
+/// machines can reach.
+fn example_secret_in_use(cfg: &Config) -> anyhow::Result<bool> {
+    let example = cfg.service_secret == EXAMPLE_SERVICE_SECRET;
+    anyhow::ensure!(
+        !example || cfg.listen.ip().is_loopback(),
+        "service_secret is the example value from config.example.toml and listen ({}) is not a loopback \
+         address; set a secret of your own (ME_AUTH__SERVICE_SECRET)",
+        cfg.listen
+    );
+    Ok(example)
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
@@ -50,6 +67,11 @@ pub fn build_state(cfg: Config) -> anyhow::Result<(AppState, Option<String>)> {
         cfg.service_secret.len() >= 16,
         "service_secret must be at least 16 characters"
     );
+    if example_secret_in_use(&cfg)? {
+        tracing::warn!(
+            "service_secret is the example service_secret from config.example.toml; change it before anything but local development"
+        );
+    }
     std::fs::create_dir_all(&cfg.data_dir)?;
     let db = Db::open(&cfg.data_dir.join("auth.db"))?;
     let email = cfg

@@ -37,10 +37,15 @@ fn req_row(r: &Row) -> rusqlite::Result<AuthRequest> {
     })
 }
 
-/// Returns the raw challenge id.
+/// Returns the raw challenge id. Also sweeps expired requests: anyone can create them without signing
+/// in, and one that is never accepted would otherwise stay forever.
 pub fn create_request(db: &Db, r: &AuthRequest) -> ApiResult<String> {
     let challenge = random_token();
     db.with(|c| {
+        c.execute(
+            "DELETE FROM auth_requests WHERE expires_at <= ?1",
+            [Utc::now().timestamp()],
+        )?;
         c.execute(
             "INSERT INTO auth_requests (challenge, client_id, redirect_uri, scope, state, code_challenge, nonce, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",

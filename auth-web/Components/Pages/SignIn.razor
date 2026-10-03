@@ -90,7 +90,7 @@
         if (!r.Ok)
         {
             if (await Redirected(r, userScoped: false)) return;
-            Logger.LogWarning("Sign-in failed for {Login}: {Code}", Input.Login, r.Code);
+            Logger.LogWarning("Sign-in failed for {Login}: {Code}", LogText.Clean(Input.Login), r.Code);
             showResend = r.Code == "email_not_verified";
             error = r.Code switch
             {

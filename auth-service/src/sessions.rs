@@ -172,13 +172,16 @@ pub struct PendingUser(pub SessionUser);
 
 pub struct AdminUser(pub SessionUser);
 
+/// The credential of an `Authorization: Bearer <token>` header. The scheme name is case-insensitive
+/// (RFC 9110).
+pub fn bearer(headers: &HeaderMap) -> Option<&str> {
+    let v = headers.get("authorization")?.to_str().ok()?;
+    let (scheme, token) = v.split_once(' ')?;
+    scheme.eq_ignore_ascii_case("bearer").then_some(token)
+}
+
 async fn load(parts: &Parts, state: &AppState) -> ApiResult<SessionUser> {
-    let token = parts
-        .headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or_else(unauthorized)?;
+    let token = bearer(&parts.headers).ok_or_else(unauthorized)?;
     let (session_id, user_id) = lookup(&state.db, token)?.ok_or_else(unauthorized)?;
     Ok(SessionUser {
         user: users::get(&state.db, user_id)?,

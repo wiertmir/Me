@@ -787,6 +787,48 @@ async fn user_who_must_change_password_cannot_accept() {
 }
 
 #[tokio::test]
+async fn userinfo_accepts_any_case_of_the_bearer_scheme() {
+    let app = TestApp::spawn().await;
+    let session = app.admin_session().await;
+    let t = app.oauth_tokens(&session, "openid").await;
+    let token = t["access_token"].as_str().unwrap();
+    for scheme in ["bearer", "BEARER", "Bearer"] {
+        let r = app
+            .http
+            .get(format!("{}/oauth/userinfo", app.base))
+            .header("Authorization", format!("{scheme} {token}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{scheme}");
+    }
+}
+
+#[tokio::test]
+async fn creating_an_auth_request_sweeps_expired_ones() {
+    let app = TestApp::spawn().await;
+    let count = || {
+        app.state
+            .db
+            .with(|c| {
+                c.query_row("SELECT count(*) FROM auth_requests", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+            })
+            .unwrap()
+    };
+    assert_eq!(authorize_with(&app, &[]).await.status(), StatusCode::FOUND);
+    assert_eq!(count(), 1);
+    // The first request expires; it is never accepted, so nothing else would remove it.
+    app.state
+        .db
+        .with(|c| c.execute("UPDATE auth_requests SET expires_at = 1", []))
+        .unwrap();
+    assert_eq!(authorize_with(&app, &[]).await.status(), StatusCode::FOUND);
+    assert_eq!(count(), 1, "the expired request was swept");
+}
+
+#[tokio::test]
 async fn userinfo_rejects_bad_tokens() {
     let app = TestApp::spawn().await;
     let session = app.admin_session().await;

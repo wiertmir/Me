@@ -335,3 +335,93 @@ fn build_state_rejects_weak_service_secret() {
         );
     }
 }
+
+#[test]
+fn example_service_secret_is_refused_off_loopback() {
+    // The constant is the value the example config publishes.
+    let example = include_str!("../config.example.toml");
+    assert!(example.contains(&format!(
+        "service_secret = \"{}\"",
+        auth_service::EXAMPLE_SERVICE_SECRET
+    )));
+    let cfg = |listen: &str, secret: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = auth_service::Config::for_tests(dir.path().to_path_buf(), secret);
+        c.listen = listen.parse().unwrap();
+        (dir, c)
+    };
+    for listen in ["0.0.0.0:8081", "192.168.1.10:8081", "[::]:8081"] {
+        let (_dir, c) = cfg(listen, auth_service::EXAMPLE_SERVICE_SECRET);
+        let e = auth_service::build_state(c)
+            .err()
+            .expect(listen)
+            .to_string();
+        assert!(e.contains("example"), "{e}");
+    }
+    for listen in ["127.0.0.1:8081", "[::1]:8081"] {
+        let (_dir, c) = cfg(listen, auth_service::EXAMPLE_SERVICE_SECRET);
+        assert!(auth_service::build_state(c).is_ok(), "{listen}");
+    }
+    // A secret of one's own may listen anywhere.
+    let (_dir, c) = cfg("0.0.0.0:8081", SERVICE_SECRET);
+    assert!(auth_service::build_state(c).is_ok());
+}
+
+#[tokio::test]
+async fn bearer_scheme_is_case_insensitive() {
+    let app = TestApp::spawn().await;
+    let t = app.admin_session().await;
+    for scheme in ["bearer", "BEARER", "Bearer"] {
+        let r = app
+            .http
+            .get(format!("{}/api/me", app.base))
+            .header("X-Service-Secret", SERVICE_SECRET)
+            .header("Authorization", format!("{scheme} {t}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{scheme}");
+    }
+    for bad in [
+        format!("Basic {t}"),
+        format!("Bearer{t}"),
+        "Bearer".into(),
+        "Béarer x".into(),
+    ] {
+        let r = app
+            .http
+            .get(format!("{}/api/me", app.base))
+            .header("X-Service-Secret", SERVICE_SECRET)
+            .header("Authorization", bad.as_bytes())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn display_name_is_optional_trimmed_and_limited_to_100_characters() {
+    let app = TestApp::spawn().await;
+    let t = app.admin_session().await;
+    let patch = |name: String| {
+        app.api(
+            Method::PATCH,
+            "/api/me",
+            Some(&t),
+            json!({"display_name": name}),
+        )
+    };
+    let (s, b) = patch(format!("  {}  ", "é".repeat(100))).await;
+    assert_eq!(
+        (s, b["display_name"].as_str()),
+        (StatusCode::OK, Some("é".repeat(100).as_str()))
+    );
+    let (s, b) = patch("é".repeat(101)).await;
+    assert_eq!(
+        (s, b["code"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("validation"))
+    );
+    let (s, b) = patch("   ".into()).await;
+    assert_eq!((s, b["display_name"].as_str()), (StatusCode::OK, Some("")));
+}

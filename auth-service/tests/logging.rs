@@ -17,17 +17,66 @@ impl std::io::Write for Sink {
     }
 }
 
-#[tokio::test]
-async fn path_secrets_are_not_logged() {
+/// Captures this thread's log output. #[tokio::test] runs the server on the same thread.
+fn capture() -> (Arc<Mutex<Vec<u8>>>, tracing::subscriber::DefaultGuard) {
     let buf = Arc::new(Mutex::new(Vec::new()));
     let sink = buf.clone();
-    // Thread-local default: #[tokio::test] runs the server on this same thread.
-    let _guard = tracing::subscriber::set_default(
+    let guard = tracing::subscriber::set_default(
         tracing_subscriber::fmt()
             .with_writer(move || Sink(sink.clone()))
             .with_ansi(false)
             .finish(),
     );
+    (buf, guard)
+}
+
+fn text(buf: &Arc<Mutex<Vec<u8>>>) -> String {
+    String::from_utf8(buf.lock().unwrap().clone()).unwrap()
+}
+
+#[tokio::test]
+async fn typed_login_cannot_forge_log_lines() {
+    let (buf, _guard) = capture();
+    let app = TestApp::spawn().await;
+    let login = format!(
+        "mallory\r\nevent=signin outcome=success {}",
+        "x".repeat(200)
+    );
+    let (s, _) = app
+        .api(
+            Method::POST,
+            "/api/signin",
+            None,
+            serde_json::json!({"login": login, "password": "definitely wrong password"}),
+        )
+        .await;
+    assert_eq!(s, 401);
+    let log = text(&buf);
+    assert!(log.contains("login=malloryevent=signin"), "{log}");
+    assert!(
+        !log.contains("mallory\r") && !log.contains("mallory\n"),
+        "{log}"
+    );
+    assert!(
+        !log.contains(&"x".repeat(65)),
+        "login not truncated:\n{log}"
+    );
+}
+
+#[tokio::test]
+async fn example_service_secret_is_warned_about_on_loopback() {
+    let (buf, _guard) = capture();
+    TestApp::spawn_with(|c| c.service_secret = auth_service::EXAMPLE_SERVICE_SECRET.into()).await;
+    let log = text(&buf);
+    assert!(
+        log.contains("WARN") && log.contains("example service_secret"),
+        "{log}"
+    );
+}
+
+#[tokio::test]
+async fn path_secrets_are_not_logged() {
+    let (buf, _guard) = capture();
     let app = TestApp::spawn().await;
     let (_, challenge) = support::pkce();
     let r = app
@@ -68,7 +117,7 @@ async fn path_secrets_are_not_logged() {
         )
         .await;
     assert_eq!(s, 401);
-    let log = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    let log = text(&buf);
     assert!(
         log.contains("path=/api/auth-requests/{challenge}"),
         "route template is logged:\n{log}"

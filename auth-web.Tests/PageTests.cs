@@ -94,6 +94,34 @@ public class PageTests : PageTest
     }
 
     [Fact]
+    public void LogText_StripsControlCharacters_AndTruncatesTo64()
+    {
+        Assert.Equal("malloryforged=1", AuthWeb.Services.LogText.Clean("mallory\r\n\tforged=1\u001b\u0000"));
+        Assert.Equal(64, AuthWeb.Services.LogText.Clean(new string('x', 200)).Length);
+        Assert.Equal("", AuthWeb.Services.LogText.Clean(null));
+    }
+
+    [Fact]
+    public void Profile_DisplayName_IsOptional_AndLimitedTo100()
+    {
+        Stub.Reply("PATCH /api/me", HttpStatusCode.OK, UserJson("alice"));
+        var cut = Render<Profile>();
+        var input = cut.Find("#display-name");
+        Assert.Equal("100", input.GetAttribute("maxlength"));
+        Assert.False(input.HasAttribute("required"));
+
+        input.Change("");
+        cut.Find("form").Submit();
+        cut.WaitForAssertion(() => Assert.Equal(1, Stub.Count("PATCH /api/me")));
+        Assert.Contains("\"display_name\":\"\"", Stub.Requests.Single(r => r.Method == "PATCH").Body);
+
+        cut.Find("#display-name").Change(new string('x', 101));
+        cut.Find("form").Submit();
+        Assert.Contains("Use at most 100 characters.", cut.Markup);
+        Assert.Equal(1, Stub.Count("PATCH /api/me"));
+    }
+
+    [Fact]
     public void AppPassword_IsShownOnce_NotListed_AndGoneAfterDismiss()
     {
         Stub.Reply("POST /api/me/app-passwords", HttpStatusCode.Created,

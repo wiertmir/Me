@@ -134,7 +134,10 @@ struct PatchUserRequest {
 
 /// Update a user
 ///
-/// Disables/enables or promotes/demotes a user. Disabling revokes their sessions and refresh tokens. At least one of the fields is required.
+/// Disables/enables or promotes/demotes a user. Disabling revokes all of their sign-in state: sessions,
+/// refresh tokens, authorization codes, pending social tickets and reset links, and it deletes their app
+/// passwords (enabling the user again does not bring any of it back). Linked identities are kept. At
+/// least one of the fields is required.
 #[utoipa::path(
     patch, path = "/api/admin/users/{id}",
     tag = "admin",
@@ -182,7 +185,10 @@ struct TemporaryPassword {
 
 /// Reset a user's password
 ///
-/// Gives the user a new temporary password and revokes their sessions, refresh tokens and reset tokens.
+/// Gives the user a new temporary password that must be changed at the next sign-in, and revokes all of
+/// their sign-in state: sessions, refresh tokens, authorization codes, pending social tickets and reset
+/// links; their app passwords are deleted. Linked identities are removed too when the user's email
+/// address was never verified.
 #[utoipa::path(
     post, path = "/api/admin/users/{id}/reset-password",
     tag = "admin",

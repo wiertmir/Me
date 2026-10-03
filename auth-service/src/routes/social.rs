@@ -449,7 +449,8 @@ fn sign_up(
     }
     let user = user.ok_or_else(|| Fail::new(false, "social_failed", "no free username"))?;
     if let Some(name) = &p.name {
-        users::set_display_name(&s.db, user.id, &name.chars().take(100).collect::<String>())?;
+        let name: String = name.trim().chars().take(100).collect();
+        users::set_display_name(&s.db, user.id, name.trim_end())?;
     }
     if !social_store::insert_identity(&s.db, user.id, provider, &p.subject, Some(email))? {
         return Err(Fail::new(false, "social_failed", "identity already linked"));

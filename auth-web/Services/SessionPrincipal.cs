@@ -32,6 +32,15 @@ public static class SessionPrincipal
     public static bool MustChange(ClaimsPrincipal user) => user.FindFirstValue(MustChangeClaim) == "true";
 }
 
+public static class LogText
+{
+    /// <summary>
+    /// Text a visitor typed, made safe to log: control characters (CR, LF, escapes…) removed so it cannot forge
+    /// or break log lines, and cut to 64 characters. The service applies the same rule to its own log.
+    /// </summary>
+    public static string Clean(string? s) => new((s ?? "").Where(c => !char.IsControl(c)).Take(64).ToArray());
+}
+
 public static class LocalUrl
 {
     /// <summary>A path on this site: one leading '/', not '//' or '/\', no control characters.</summary>

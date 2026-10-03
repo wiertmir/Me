@@ -15,6 +15,7 @@ use super::client_info;
 use crate::{
     AppState, crypto,
     extract::ApiJson,
+    logging,
     sessions::{self, PendingUser},
     users::{self, User},
 };
@@ -139,7 +140,7 @@ async fn signin(
         .and_then(|(_, h)| h.clone());
     let verified = verify(&s, req.password, hash).await;
     let Some((user, _)) = found.filter(|_| verified) else {
-        tracing::warn!(event = "signin", login = %login.chars().take(64).collect::<String>(), ip = %ip, outcome = "failure");
+        tracing::warn!(event = "signin", login = %logging::for_log(&login), ip = %ip, outcome = "failure");
         return Err(invalid_credentials().into());
     };
     s.limiter.clear(&user_key);
