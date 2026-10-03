@@ -102,6 +102,14 @@ CREATE TABLE IF NOT EXISTS social_link_intents (
     provider TEXT NOT NULL,
     expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS social_link_tickets (
+    ticket_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    email TEXT,
+    expires_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS social_tickets (
     ticket_hash TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -157,7 +165,7 @@ mod tests {
                 )
             })
             .unwrap();
-        assert_eq!(n, 11);
+        assert_eq!(n, 12);
         let fk: i64 = db
             .with(|c| c.query_row("PRAGMA foreign_keys", [], |r| r.get(0)))
             .unwrap();

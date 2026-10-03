@@ -122,10 +122,13 @@ pub async fn fetch_profile(
         .ok_or("token response had no access_token")?;
 
     let get = |url: String| {
-        http.get(url)
-            .bearer_auth(&token)
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "me-auth-service")
+        let r = http.get(url).bearer_auth(&token);
+        if provider == "github" {
+            r.header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "me-auth-service")
+        } else {
+            r.header("Accept", "application/json")
+        }
     };
     let resp = get(pc.userinfo_url.clone().unwrap_or_else(|| e.userinfo.into()))
         .send()

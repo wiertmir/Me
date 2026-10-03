@@ -118,6 +118,53 @@ pub fn take_ticket(db: &Db, ticket: &str) -> ApiResult<Option<(Uuid, Option<Stri
     })
 }
 
+pub struct LinkTicket {
+    pub user: Uuid,
+    pub provider: String,
+    pub subject: String,
+    pub email: Option<String>,
+}
+
+/// One-time proof, from the link callback, that a provider identity may be attached to `user`.
+pub fn create_link_ticket(
+    db: &Db,
+    user: Uuid,
+    provider: &str,
+    subject: &str,
+    email: Option<&str>,
+) -> ApiResult<String> {
+    let ticket = random_token();
+    let now = Utc::now().timestamp();
+    db.with(|c| {
+        c.execute("DELETE FROM social_link_tickets WHERE expires_at <= ?1", [now])?;
+        c.execute(
+            "INSERT INTO social_link_tickets (ticket_hash, user_id, provider, subject, email, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![sha256_hex(&ticket), user.to_string(), provider, subject, email, now + TICKET_SECS],
+        )
+    })?;
+    Ok(ticket)
+}
+
+pub fn take_link_ticket(db: &Db, ticket: &str) -> ApiResult<Option<LinkTicket>> {
+    db.with(|c| {
+        c.query_row(
+            "DELETE FROM social_link_tickets WHERE ticket_hash = ?1 AND expires_at > ?2
+             RETURNING user_id, provider, subject, email",
+            params![sha256_hex(ticket), Utc::now().timestamp()],
+            |r| {
+                Ok(LinkTicket {
+                    user: uuid_col(r.get(0)?)?,
+                    provider: r.get(1)?,
+                    subject: r.get(2)?,
+                    email: r.get(3)?,
+                })
+            },
+        )
+        .optional()
+    })
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct Identity {
     pub provider: String,

@@ -23,6 +23,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(revoke_session))
         .routes(routes!(list_identities))
         .routes(routes!(unlink_identity))
+        .routes(routes!(confirm_identity))
 }
 
 /// The signed-in user. Also available while a password change is pending.
@@ -134,4 +135,63 @@ async fn unlink_identity(
             Ok(StatusCode::NO_CONTENT)
         }
     }
+}
+
+#[derive(Deserialize, ToSchema)]
+struct ConfirmIdentity {
+    ticket: String,
+}
+
+/// Attaches the provider identity from a link callback to the signed-in user. The ticket must have been
+/// issued for this very user, so a link flow completed in someone else's browser cannot attach anything.
+#[utoipa::path(post, path = "/api/me/identities/confirm", request_body = ConfirmIdentity, responses(
+    (status = 204),
+    (status = 400, description = "invalid_ticket (unknown, expired or used)", body = ErrorBody),
+    (status = 401, body = ErrorBody),
+    (status = 403, description = "forbidden (ticket belongs to another user)", body = ErrorBody),
+    (status = 409, description = "identity_in_use", body = ErrorBody),
+))]
+async fn confirm_identity(
+    State(s): State<AppState>,
+    me: SessionUser,
+    Json(req): Json<ConfirmIdentity>,
+) -> Result<StatusCode, ApiError> {
+    let t = social_store::take_link_ticket(&s.db, &req.ticket)?.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_ticket",
+            "unknown, expired or already used ticket",
+        )
+    })?;
+    if t.user != me.user.id {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "ticket was issued for another user",
+        ));
+    }
+    let in_use = || {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "identity_in_use",
+            "identity is linked to another user",
+        )
+    };
+    match social_store::find_identity(&s.db, &t.provider, &t.subject)? {
+        Some(owner) if owner != me.user.id => return Err(in_use()),
+        Some(_) => {}
+        None => {
+            if !social_store::insert_identity(
+                &s.db,
+                me.user.id,
+                &t.provider,
+                &t.subject,
+                t.email.as_deref(),
+            )? {
+                return Err(in_use());
+            }
+            tracing::info!(event = "identity_linked", user_id = %me.user.id, provider = %t.provider);
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
 }

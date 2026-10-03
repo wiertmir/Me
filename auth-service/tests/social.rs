@@ -31,6 +31,7 @@ struct StubState {
     emails: Value,
     challenge: Option<String>,
     deny: bool,
+    accepts: Vec<String>,
 }
 type Shared = Arc<Mutex<StubState>>;
 
@@ -122,7 +123,16 @@ fn authed(h: &HeaderMap) -> bool {
         .is_some_and(|v| v == "Bearer stub-token")
 }
 
+fn note_accept(s: &Shared, h: &HeaderMap) {
+    let a = h
+        .get(header::ACCEPT)
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    s.lock().unwrap().accepts.push(a);
+}
+
 async fn userinfo(State(s): State<Shared>, h: HeaderMap) -> impl IntoResponse {
+    note_accept(&s, &h);
     if !authed(&h) {
         return (StatusCode::UNAUTHORIZED, Json(Value::Null));
     }
@@ -130,6 +140,7 @@ async fn userinfo(State(s): State<Shared>, h: HeaderMap) -> impl IntoResponse {
 }
 
 async fn emails(State(s): State<Shared>, h: HeaderMap) -> impl IntoResponse {
+    note_accept(&s, &h);
     if !authed(&h) {
         return (StatusCode::UNAUTHORIZED, Json(Value::Null));
     }
@@ -235,6 +246,40 @@ async fn signin(app: &TestApp, provider: &str) -> Value {
     let (s, b) = exchange(app, &ticket_of(&r)).await;
     assert_eq!(s, StatusCode::OK, "{b}");
     b
+}
+
+fn link_ticket_of(r: &reqwest::Response) -> String {
+    let l = loc(r);
+    assert!(
+        l.starts_with(&format!("{WEB}/account/security?link_ticket=")),
+        "{l}"
+    );
+    query(&l, "link_ticket").unwrap()
+}
+
+async fn confirm(app: &TestApp, session: &str, ticket: &str) -> (StatusCode, Value) {
+    app.api(
+        axum::http::Method::POST,
+        "/api/me/identities/confirm",
+        Some(session),
+        json!({"ticket": ticket}),
+    )
+    .await
+}
+
+/// Link intent for `session`'s user, then the whole browser journey; returns the callback response.
+async fn link_flow(app: &TestApp, session: &str, provider: &str) -> reqwest::Response {
+    let (s, b) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/social/link-intent",
+            Some(session),
+            json!({"provider": provider}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let u = b["start_url"].as_str().unwrap();
+    social(app, provider, &u[u.find('?').unwrap()..]).await
 }
 
 fn assert_redirect(r: &reqwest::Response, path: &str) {
@@ -434,7 +479,24 @@ async fn link_intent_attaches_identity_to_signed_in_user() {
     assert!(start_url.starts_with(&format!("{}/social/google/start?link=", app.base)));
     let q = &start_url[start_url.find('?').unwrap()..];
     let r = social(&app, "google", q).await;
-    assert_redirect(&r, "/account/security?linked=google");
+    let ticket = link_ticket_of(&r);
+    // Nothing is attached until the session confirms.
+    assert!(
+        identities(&app, &session)
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        confirm(&app, &session, &ticket).await.0,
+        StatusCode::NO_CONTENT
+    );
+    let (s, b) = confirm(&app, &session, &ticket).await;
+    assert_eq!(
+        (s, b["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_ticket"))
+    );
     assert_eq!(
         identities(&app, &session).await.as_array().unwrap().len(),
         1
@@ -713,4 +775,183 @@ async fn start_with_both_challenge_and_link_fails() {
     let (app, _stub) = setup(&["google"]).await;
     let (r, _) = start(&app, "google", "?challenge=a&link=b").await;
     assert_redirect(&r, "/signin?error=social_failed");
+}
+
+#[tokio::test]
+async fn link_ticket_cannot_be_confirmed_by_another_user() {
+    let (app, stub) = setup(&["google"]).await;
+    let a = make_user(&app, "alice", "alice@example.org", true, true);
+    let b = make_user(&app, "bob", "bob@example.org", true, true);
+    let (sa, sb) = (
+        password_session(&app, "alice").await,
+        password_session(&app, "bob").await,
+    );
+    stub.profile(google("victim", Some("victim@example.org"), true));
+    let ticket = link_ticket_of(&link_flow(&app, &sa, "google").await);
+    let (s, body) = confirm(&app, &sb, &ticket).await;
+    assert_eq!(
+        (s, body["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("forbidden"))
+    );
+    // The ticket is burned: the rightful owner cannot use it either.
+    assert_eq!(confirm(&app, &sa, &ticket).await.0, StatusCode::BAD_REQUEST);
+    assert!(
+        social_store::list_identities(&app.state.db, a)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        social_store::list_identities(&app.state.db, b)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn confirm_with_identity_taken_meanwhile_is_a_conflict() {
+    let (app, stub) = setup(&["google"]).await;
+    let a = make_user(&app, "alice", "alice@example.org", true, true);
+    let b = make_user(&app, "bob", "bob@example.org", true, true);
+    let sa = password_session(&app, "alice").await;
+    stub.profile(google("g5", Some("x@example.org"), true));
+    let ticket = link_ticket_of(&link_flow(&app, &sa, "google").await);
+    link(&app, b, "google", "g5");
+    let (s, body) = confirm(&app, &sa, &ticket).await;
+    assert_eq!(
+        (s, body["code"].as_str()),
+        (StatusCode::CONFLICT, Some("identity_in_use"))
+    );
+    assert!(
+        social_store::list_identities(&app.state.db, a)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn accept_header_is_github_specific() {
+    let (app, stub) = setup(&["google", "github", "microsoft"]).await;
+    stub.profile(google("g1", Some("g@example.org"), true));
+    signin(&app, "google").await;
+    stub.profile(json!({"sub": "m1", "email": "m@example.org", "name": "M"}));
+    signin(&app, "microsoft").await;
+    assert!(
+        stub.state
+            .lock()
+            .unwrap()
+            .accepts
+            .iter()
+            .all(|a| a == "application/json")
+    );
+    stub.state.lock().unwrap().accepts.clear();
+    stub.profile(json!({"id": 1, "login": "octo"}));
+    stub.emails(json!([{"email": "o@example.org", "primary": true, "verified": true}]));
+    signin(&app, "github").await;
+    let accepts = stub.state.lock().unwrap().accepts.clone();
+    assert_eq!(accepts.len(), 2);
+    assert!(accepts.iter().all(|a| a == "application/vnd.github+json"));
+}
+
+async fn forgot_and_reset(app: &TestApp, email: &str, new_password: &str) {
+    let (s, _) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/password/forgot",
+            None,
+            json!({"email": email}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, b) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/password/reset",
+            None,
+            json!({"token": app.last_mail_token(), "new_password": new_password}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
+}
+
+#[tokio::test]
+async fn reset_purges_identities_of_pre_hijacked_account() {
+    let app_stub = Stub::spawn().await;
+    let app = TestApp::spawn_with_mail_and(|cfg| {
+        cfg.web_url = WEB.into();
+        cfg.providers.insert("microsoft".into(), app_stub.config());
+    })
+    .await;
+    let stub = app_stub;
+    // Attacker signs up through Microsoft with the victim's address (unverified).
+    stub.profile(json!({"sub": "evil", "email": "victim@example.org", "name": "Mallory"}));
+    let b = signin(&app, "microsoft").await;
+    assert_eq!(b["user"]["email_verified"], false);
+    let id: Uuid = b["user"]["id"].as_str().unwrap().parse().unwrap();
+    // The victim reclaims the account via password reset.
+    forgot_and_reset(&app, "victim@example.org", "brand new passphrase").await;
+    assert!(
+        social_store::list_identities(&app.state.db, id)
+            .unwrap()
+            .is_empty()
+    );
+    // The attacker's identity no longer works: the account now has a verified email, Microsoft's is not.
+    assert_redirect(
+        &social(&app, "microsoft", "").await,
+        "/signin?error=account_exists",
+    );
+    let (s, body) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/signin",
+            None,
+            json!({"login": "victim@example.org", "password": "brand new passphrase"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn reset_keeps_identities_of_verified_account() {
+    let app = TestApp::spawn_with_mail().await;
+    let id = make_user(&app, "alice", "alice@example.org", true, true);
+    link(&app, id, "google", "g1");
+    forgot_and_reset(&app, "alice@example.org", "brand new passphrase").await;
+    assert_eq!(
+        social_store::list_identities(&app.state.db, id)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn admin_reset_purges_identities_only_when_email_unverified() {
+    let (app, _stub) = setup(&["google"]).await;
+    let admin = app.admin_session().await;
+    let unverified = make_user(&app, "unv", "unv@example.org", false, false);
+    let verified = make_user(&app, "ver", "ver@example.org", true, true);
+    link(&app, unverified, "google", "g1");
+    link(&app, verified, "google", "g2");
+    for id in [unverified, verified] {
+        let (s, b) = app
+            .api(
+                axum::http::Method::POST,
+                &format!("/api/admin/users/{id}/reset-password"),
+                Some(&admin),
+                Value::Null,
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+    }
+    assert!(
+        social_store::list_identities(&app.state.db, unverified)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        social_store::list_identities(&app.state.db, verified)
+            .unwrap()
+            .len(),
+        1
+    );
 }

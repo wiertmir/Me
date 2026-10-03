@@ -32,6 +32,11 @@ impl TestApp {
         Self::start(|_| {}, true).await
     }
 
+    /// `spawn_with` plus an in-memory mailer.
+    pub async fn spawn_with_mail_and(f: impl FnOnce(&mut Config)) -> Self {
+        Self::start(f, true).await
+    }
+
     async fn start(f: impl FnOnce(&mut Config), mail: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = Config::for_tests(dir.path().to_path_buf(), SERVICE_SECRET);

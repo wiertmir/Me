@@ -136,11 +136,27 @@ pub fn set_password(db: &Db, id: Uuid, pw: &str, must_change: bool) -> ApiResult
 /// Hash computed by the caller (off the async thread). Reset proves control of the email, so it also verifies it.
 pub fn complete_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<()> {
     db.with(|c| {
-        c.execute(
+        let tx = c.unchecked_transaction()?;
+        purge_identities_if_unverified(&tx, id)?;
+        tx.execute(
             "UPDATE users SET password_hash = ?1, must_change_password = 0, email_verified = 1 WHERE id = ?2",
             params![hash, id.to_string()],
-        )
-    })?;
+        )?;
+        tx.commit()
+    })
+}
+
+/// Whoever resets an account whose email was never proven reclaims it, so identities attached while it
+/// was unproven (e.g. a pre-hijacking sign-up with the victim's address) are removed. Call before the update.
+fn purge_identities_if_unverified(tx: &rusqlite::Connection, id: Uuid) -> rusqlite::Result<()> {
+    let n = tx.execute(
+        "DELETE FROM identities WHERE user_id = ?1
+         AND EXISTS (SELECT 1 FROM users WHERE id = ?1 AND email_verified = 0)",
+        [id.to_string()],
+    )?;
+    if n > 0 {
+        tracing::warn!(event = "identities_purged_on_reset", user_id = %id, count = n);
+    }
     Ok(())
 }
 
@@ -252,6 +268,7 @@ pub fn admin_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<bool> {
     let id = id.to_string();
     db.with(|c| {
         let tx = c.unchecked_transaction()?;
+        purge_identities_if_unverified(&tx, id.parse().unwrap_or_default())?;
         let n = tx.execute(
             "UPDATE users SET password_hash = ?1, must_change_password = 1 WHERE id = ?2",
             params![hash, id],

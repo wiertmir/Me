@@ -317,21 +317,17 @@ async fn run(
             Some(owner) if owner != uid => {
                 return Err(fail("identity_in_use", "linked to another user"));
             }
-            Some(_) => {}
-            None => {
-                if !social_store::insert_identity(
-                    &s.db,
-                    uid,
-                    provider,
-                    &profile.subject,
-                    profile.email.as_deref(),
-                )? {
-                    return Err(fail("identity_in_use", "user already has this provider"));
-                }
-                tracing::info!(event = "identity_linked", user_id = %uid, provider = %provider);
-            }
+            _ => {}
         }
-        return Ok(format!("/account/security?linked={provider}"));
+        // The identity is attached only when the signed-in user's own session confirms this ticket.
+        let ticket = social_store::create_link_ticket(
+            &s.db,
+            uid,
+            provider,
+            &profile.subject,
+            profile.email.as_deref(),
+        )?;
+        return Ok(format!("/account/security?link_ticket={ticket}"));
     }
 
     let user_id = match social_store::find_identity(&s.db, provider, &profile.subject)? {
