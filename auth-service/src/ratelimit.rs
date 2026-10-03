@@ -35,10 +35,15 @@ impl RateLimiter {
         }
     }
 
-    pub fn fail(&self, key: &str) {
+    /// Atomically refuses a locked key, otherwise counts the attempt as a failure (locking at the
+    /// threshold). Callers `clear` or `undo` it when the attempt turns out to be legitimate.
+    pub fn begin(&self, key: &str) -> Result<(), Duration> {
         let now = Instant::now();
         let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let e = map.entry(key.to_string()).or_insert(Entry { failures: 0, last_failure: now, locked_until: None });
+        if let Some(until) = e.locked_until.filter(|u| *u > now) {
+            return Err(until - now);
+        }
         if now.duration_since(e.last_failure) > FORGET_AFTER {
             e.failures = 0;
         }
@@ -48,6 +53,18 @@ impl RateLimiter {
         if e.failures >= t {
             let secs = (1u64 << (e.failures - t).min(20)).min(MAX_LOCK);
             e.locked_until = Some(now + Duration::from_secs(secs));
+        }
+        Ok(())
+    }
+
+    /// Takes back one `begin` count (and the lock it caused, if that drops the key under threshold).
+    pub fn undo(&self, key: &str) {
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = map.get_mut(key) {
+            e.failures = e.failures.saturating_sub(1);
+            if e.failures < threshold(key) {
+                e.locked_until = None;
+            }
         }
     }
 
@@ -63,20 +80,21 @@ mod tests {
     #[test]
     fn locks_after_threshold_and_clears() {
         let l = RateLimiter::default();
-        for _ in 0..4 {
-            l.fail("user:a");
-            assert!(l.check("user:a").is_ok());
+        for _ in 0..5 {
+            assert!(l.begin("user:a").is_ok());
         }
-        l.fail("user:a");
+        assert!(l.begin("user:a").is_err());
         assert!(l.check("user:a").is_err());
         assert!(l.check("user:b").is_ok());
         l.clear("user:a");
         assert!(l.check("user:a").is_ok());
         for _ in 0..19 {
-            l.fail("ip:1");
+            l.begin("ip:1").unwrap();
         }
         assert!(l.check("ip:1").is_ok());
-        l.fail("ip:1");
+        l.begin("ip:1").unwrap();
         assert!(l.check("ip:1").is_err());
+        l.undo("ip:1");
+        assert!(l.check("ip:1").is_ok());
     }
 }

@@ -19,20 +19,26 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 pub use config::Config;
 pub use db::Db;
 
+// ponytail: 4 concurrent hashes; tune to cores/memory if sign-in latency under load matters
+const HASH_PERMITS: usize = 4;
+
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
     pub db: Db,
     pub limiter: Arc<ratelimit::RateLimiter>,
+    /// Bounds concurrent Argon2 work (CPU and ~19 MiB each).
+    pub hashing: Arc<tokio::sync::Semaphore>,
 }
 
 /// Opens the database under `cfg.data_dir`. Returns the one-time seed password when a user was seeded.
 pub fn build_state(cfg: Config) -> anyhow::Result<(AppState, Option<String>)> {
+    anyhow::ensure!(cfg.service_secret.len() >= 16, "service_secret must be at least 16 characters");
     std::fs::create_dir_all(&cfg.data_dir)?;
     let db = Db::open(&cfg.data_dir.join("auth.db"))?;
     let email = cfg.seed_email.clone().unwrap_or_else(|| format!("{}@localhost", cfg.seed_username));
     let seed_password = users::seed(&db, &cfg.seed_username, &email)?;
-    Ok((AppState { cfg: Arc::new(cfg), db, limiter: Default::default() }, seed_password))
+    Ok((AppState { cfg: Arc::new(cfg), db, limiter: Default::default(), hashing: Arc::new(tokio::sync::Semaphore::new(HASH_PERMITS)) }, seed_password))
 }
 
 #[derive(Serialize, ToSchema)]

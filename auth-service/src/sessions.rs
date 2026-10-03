@@ -65,8 +65,8 @@ fn lookup(db: &Db, token: &str) -> ApiResult<Option<(Uuid, Uuid)>> {
 }
 
 fn secret_ok(headers: &HeaderMap, expected: &str) -> bool {
-    let given = headers.get("x-service-secret").map(|v| v.as_bytes()).unwrap_or_default();
-    given.ct_eq(expected.as_bytes()).into()
+    // An absent header must never match, even against an (invalid) empty secret.
+    headers.get("x-service-secret").is_some_and(|v| v.as_bytes().ct_eq(expected.as_bytes()).into())
 }
 
 /// Rejects every `/api/*` request lacking the service secret, except the public API docs.

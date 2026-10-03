@@ -138,3 +138,44 @@ fn config_debug_hides_secrets() {
     let cfg = auth_service::Config::for_tests("/tmp".into(), "super-secret-value");
     assert!(!format!("{cfg:?}").contains("super-secret-value"));
 }
+
+#[tokio::test]
+async fn parallel_wrong_guesses_cannot_outrun_the_lock() {
+    let app = TestApp::spawn().await;
+    let results = burst_of_wrong_guesses(&app).await;
+    let unauthorized = results.iter().filter(|s| **s == StatusCode::UNAUTHORIZED).count();
+    let limited = results.iter().filter(|s| **s == StatusCode::TOO_MANY_REQUESTS).count();
+    assert!(unauthorized <= 5, "{unauthorized} guesses got through");
+    assert_eq!(unauthorized + limited, 30);
+}
+
+async fn burst_of_wrong_guesses(app: &TestApp) -> Vec<StatusCode> {
+    let tasks: Vec<_> = (0..30)
+        .map(|_| {
+            let (http, url) = (app.http.clone(), format!("{}/api/signin", app.base));
+            tokio::spawn(async move {
+                http.post(url)
+                    .header("X-Service-Secret", SERVICE_SECRET)
+                    .json(&json!({"login": "wiertmir", "password": "definitely wrong password"}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for t in tasks {
+        out.push(t.await.unwrap());
+    }
+    out
+}
+
+#[test]
+fn build_state_rejects_weak_service_secret() {
+    for secret in ["", "too-short"] {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = auth_service::Config::for_tests(dir.path().to_path_buf(), secret);
+        assert!(auth_service::build_state(cfg).is_err(), "{secret:?} accepted");
+    }
+}
