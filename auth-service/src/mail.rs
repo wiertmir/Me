@@ -13,6 +13,14 @@ pub struct Email {
     pub body: String,
 }
 
+/// Credentials are attached only for a non-empty username; otherwise no SMTP authentication.
+fn credentials(c: &SmtpConfig) -> Option<Credentials> {
+    match (&c.username, &c.password) {
+        (Some(u), Some(p)) if !u.is_empty() => Some(Credentials::new(u.clone(), p.clone())),
+        _ => None,
+    }
+}
+
 #[derive(Clone)]
 pub enum Mailer {
     None,
@@ -33,9 +41,9 @@ impl Mailer {
             }
         }
         .port(c.port);
-        let builder = match (&c.username, &c.password) {
-            (Some(u), Some(p)) => builder.credentials(Credentials::new(u.clone(), p.clone())),
-            _ => builder,
+        let builder = match credentials(c) {
+            Some(creds) => builder.credentials(creds),
+            None => builder,
         };
         Ok(Self::Smtp(Box::new((builder.build(), c.from.parse()?))))
     }
@@ -78,5 +86,29 @@ impl Mailer {
             let this = self.clone();
             tokio::spawn(async move { report(this.send(email).await) });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(username: Option<&str>, password: Option<&str>) -> SmtpConfig {
+        SmtpConfig {
+            host: "h".into(),
+            port: 25,
+            username: username.map(Into::into),
+            password: password.map(Into::into),
+            from: "a@b.c".into(),
+            tls: SmtpTls::None,
+        }
+    }
+
+    #[test]
+    fn credentials_only_for_non_empty_username() {
+        assert!(credentials(&cfg(None, None)).is_none());
+        assert!(credentials(&cfg(None, Some("p"))).is_none());
+        assert!(credentials(&cfg(Some(""), Some(""))).is_none());
+        assert!(credentials(&cfg(Some("u"), Some("p"))).is_some());
     }
 }

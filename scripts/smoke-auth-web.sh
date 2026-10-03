@@ -235,7 +235,9 @@ start_svc mail '[smtp]
 host = "127.0.0.1"
 port = 2525
 from = "Me <no-reply@example.test>"
-tls = "none"'
+tls = "none"
+username = ""
+password = ""'
 J="$T/j.jar"
 form_post "$J" "$WEB/signup" signup $(SIGNUP_FIELDS bob bob@example.test "$PW1")
 [ "$CODE" = 200 ] && grep -q "Check your email to finish creating your account" "$T/body" && grep -q "Resend email" "$T/body"
@@ -303,10 +305,10 @@ TICKET="bogus-ticket-$RANDOM$RANDOM"
 req "$K" "$WEB/social/complete?ticket=$TICKET"
 [ "$CODE" = 302 ] && [ "$LOC" = "/signin?error=social_failed" ]; check "S7 bogus ticket redirects to /signin?error=social_failed" $? "$CODE $LOC"
 ok=0
-for u in verify reset signup forgot social/complete; do
+for u in verify reset signup forgot social/complete session-expired; do
   req "$K" "$WEB/$u"; grep -Eqi '^cache-control: .*no-store' "$T/hdr" || { ok=1; echo "   missing on /$u"; }
 done
-check "S8 /verify /reset /signup /forgot /social/complete carry Cache-Control: no-store" $ok
+check "S8 /verify /reset /signup /forgot /social/complete /session-expired carry Cache-Control: no-store" $ok
 
 sleep 1
 leak=0
