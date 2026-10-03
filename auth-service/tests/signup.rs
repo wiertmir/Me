@@ -36,7 +36,8 @@ async fn signup_without_mail_is_active_immediately() {
     let (s, b) = signup(&app, "alice", "alice@example.com", PW).await;
     assert_eq!(s, StatusCode::CREATED, "{b}");
     assert_eq!(b["verification_required"], false);
-    assert_eq!(b["user"]["email_verified"], true);
+    // Nobody proved the address, so it is never marked verified; sign-in works because the gate needs mail.
+    assert_eq!(b["user"]["email_verified"], false);
     assert_eq!(signin(&app, "alice", PW).await.0, StatusCode::OK);
 }
 

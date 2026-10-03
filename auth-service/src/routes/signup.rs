@@ -99,7 +99,9 @@ pub(crate) fn valid_email(e: &str) -> bool {
 
 /// Sign up
 ///
-/// Self sign-up. With mail enabled the account must verify its email address before it can sign in.
+/// Self sign-up. The email address always starts unverified. With mail enabled the account must verify it
+/// before it can sign in; without mail it can sign in at once, but the address stays unverified (so a
+/// social identity with the same address is never linked to it automatically).
 #[utoipa::path(
     post, path = "/api/signup",
     tag = "auth",
@@ -153,7 +155,9 @@ async fn signup(
         NewUser {
             username,
             email,
-            email_verified: !verification_required,
+            // Never verified here: nobody has proven the address. Without mail the sign-in gate does not
+            // apply, and an unverified address is never auto-linked to a provider identity.
+            email_verified: false,
             is_admin: false,
             must_change_password: false,
             password_hash: Some(password_hash),

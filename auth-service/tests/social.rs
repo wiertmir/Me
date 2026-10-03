@@ -369,15 +369,70 @@ async fn linked_identity_signs_in_existing_user() {
 
 #[tokio::test]
 async fn verified_email_match_links_automatically() {
-    let (app, stub) = setup(&["google"]).await;
-    let id = make_user(&app, "alice", "alice@example.org", true, true);
+    // The local side is verified the legitimate way: mail-enabled sign-up, then the mailed link.
+    let stub = Stub::spawn().await;
+    let app = TestApp::spawn_with_mail_and(|cfg| {
+        cfg.web_url = WEB.into();
+        cfg.providers.insert("google".into(), stub.config());
+    })
+    .await;
+    let post =
+        |path: &'static str, body: Value| app.api(axum::http::Method::POST, path, None, body);
+    let (s, b) = post(
+        "/api/signup",
+        json!({"username": "alice", "email": "alice@example.org", "password": PASSWORD}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let id = b["user"]["id"].as_str().unwrap().to_string();
+    let (s, _) = post("/api/email/verify", json!({"token": app.last_mail_token()})).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
     stub.profile(google("g1", Some("alice@example.org"), true));
     let b = signin(&app, "google").await;
-    assert_eq!(b["user"]["id"], id.to_string());
+    assert_eq!(b["user"]["id"], id);
     let list = identities(&app, b["session_token"].as_str().unwrap()).await;
     assert_eq!(list[0]["provider"], "google");
     assert_eq!(list[0]["email"], "alice@example.org");
     assert!(list[0]["created_at"].is_string());
+}
+
+/// Pre-hijacking: without mail nobody proves the sign-up address, so a later provider sign-in with the
+/// same (verified) address must not be attached to that account.
+#[tokio::test]
+async fn no_mail_signup_is_never_auto_linked() {
+    let (app, stub) = setup(&["google"]).await;
+    let (s, b) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/signup",
+            None,
+            json!({"username": "mallory", "email": "victim@example.org", "password": PASSWORD}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let id: Uuid = b["user"]["id"].as_str().unwrap().parse().unwrap();
+    stub.profile(google("victim-sub", Some("victim@example.org"), true));
+    assert_redirect(
+        &social(&app, "google", "").await,
+        "/signin?error=account_exists",
+    );
+    assert!(
+        social_store::list_identities(&app.state.db, id)
+            .unwrap()
+            .is_empty()
+    );
+    let left: i64 = app
+        .state
+        .db
+        .with(|c| {
+            c.query_row(
+                "SELECT (SELECT count(*) FROM sessions) + (SELECT count(*) FROM social_tickets)",
+                [],
+                |r| r.get(0),
+            )
+        })
+        .unwrap();
+    assert_eq!(left, 0, "no session and no sign-in ticket");
 }
 
 #[tokio::test]
