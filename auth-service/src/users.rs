@@ -133,30 +133,57 @@ pub fn set_password(db: &Db, id: Uuid, pw: &str, must_change: bool) -> ApiResult
     Ok(())
 }
 
-/// Hash computed by the caller (off the async thread). Reset proves control of the email, so it also verifies it.
-pub fn complete_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<()> {
-    db.with(|c| {
-        let tx = c.unchecked_transaction()?;
-        purge_identities_if_unverified(&tx, id)?;
-        tx.execute(
-            "UPDATE users SET password_hash = ?1, must_change_password = 0, email_verified = 1 WHERE id = ?2",
-            params![hash, id.to_string()],
-        )?;
-        tx.commit()
-    })
+/// Revokes everything that lets someone get into the account without the password: sessions, refresh
+/// tokens, social tickets and link intents, and outstanding reset tokens. Run inside the transaction
+/// that changes the password. EVERY future credential type (app passwords arrive in the next task) must
+/// be added here.
+fn revoke_sign_in_state(tx: &rusqlite::Connection, id: &str) -> rusqlite::Result<()> {
+    for sql in [
+        "DELETE FROM sessions WHERE user_id = ?1",
+        "DELETE FROM refresh_tokens WHERE user_id = ?1",
+        "DELETE FROM social_tickets WHERE user_id = ?1",
+        "DELETE FROM social_link_tickets WHERE user_id = ?1",
+        "DELETE FROM social_link_intents WHERE user_id = ?1",
+        "DELETE FROM email_tokens WHERE user_id = ?1 AND purpose = 'reset'",
+    ] {
+        tx.execute(sql, [id])?;
+    }
+    Ok(())
 }
 
 /// Whoever resets an account whose email was never proven reclaims it, so identities attached while it
-/// was unproven (e.g. a pre-hijacking sign-up with the victim's address) are removed. Call before the update.
-fn purge_identities_if_unverified(tx: &rusqlite::Connection, id: Uuid) -> rusqlite::Result<()> {
-    let n = tx.execute(
+/// was unproven (e.g. a pre-hijacking sign-up with the victim's address) are removed. Call before the
+/// update; returns how many were removed.
+fn purge_identities_if_unverified(tx: &rusqlite::Connection, id: &str) -> rusqlite::Result<usize> {
+    tx.execute(
         "DELETE FROM identities WHERE user_id = ?1
          AND EXISTS (SELECT 1 FROM users WHERE id = ?1 AND email_verified = 0)",
-        [id.to_string()],
-    )?;
-    if n > 0 {
-        tracing::warn!(event = "identities_purged_on_reset", user_id = %id, count = n);
+        [id],
+    )
+}
+
+fn log_purged(id: &str, count: usize) {
+    if count > 0 {
+        tracing::warn!(event = "identities_purged_on_reset", user_id = %id, count);
     }
+}
+
+/// Hash computed by the caller (off the async thread). Reset proves control of the email, so it also
+/// verifies it, and revokes all sign-in state in the same transaction.
+pub fn complete_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<()> {
+    let id = id.to_string();
+    let purged = db.with(|c| {
+        let tx = c.unchecked_transaction()?;
+        let purged = purge_identities_if_unverified(&tx, &id)?;
+        tx.execute(
+            "UPDATE users SET password_hash = ?1, must_change_password = 0, email_verified = 1 WHERE id = ?2",
+            params![hash, id],
+        )?;
+        revoke_sign_in_state(&tx, &id)?;
+        tx.commit()?;
+        Ok(purged)
+    })?;
+    log_purged(&id, purged);
     Ok(())
 }
 
@@ -266,23 +293,20 @@ pub fn update_flags(
 /// sessions, refresh tokens and outstanding reset tokens. False when the user does not exist.
 pub fn admin_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<bool> {
     let id = id.to_string();
-    db.with(|c| {
+    let purged = db.with(|c| {
         let tx = c.unchecked_transaction()?;
-        purge_identities_if_unverified(&tx, id.parse().unwrap_or_default())?;
+        let purged = purge_identities_if_unverified(&tx, &id)?;
         let n = tx.execute(
             "UPDATE users SET password_hash = ?1, must_change_password = 1 WHERE id = ?2",
             params![hash, id],
         )?;
         if n == 0 {
-            return Ok(false);
+            return Ok(None);
         }
-        tx.execute("DELETE FROM sessions WHERE user_id = ?1", [&id])?;
-        tx.execute("DELETE FROM refresh_tokens WHERE user_id = ?1", [&id])?;
-        tx.execute(
-            "DELETE FROM email_tokens WHERE user_id = ?1 AND purpose = 'reset'",
-            [&id],
-        )?;
+        revoke_sign_in_state(&tx, &id)?;
         tx.commit()?;
-        Ok(true)
-    })
+        Ok(Some(purged))
+    })?;
+    log_purged(&id, purged.unwrap_or(0));
+    Ok(purged.is_some())
 }

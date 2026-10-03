@@ -15,7 +15,6 @@ use crate::{
     crypto,
     email_tokens::{self, Purpose},
     mail::Email,
-    sessions,
     users::{self, NewUser, User},
 };
 
@@ -41,6 +40,11 @@ fn invalid_token() -> ApiError {
 }
 
 async fn send_token_mail(s: &AppState, user: &User, purpose: Purpose) -> Result<(), ApiError> {
+    // A passwordless account was created socially, possibly with an address its creator does not own;
+    // verifying it by mail would bless that. It becomes verified only through a password reset.
+    if matches!(purpose, Purpose::Verify) && !user.has_password {
+        return Ok(());
+    }
     let token = email_tokens::create(&s.db, user.id, purpose)?;
     let (path, subject, what) = match purpose {
         Purpose::Verify => (
@@ -181,6 +185,9 @@ async fn verify_email(
 ) -> Result<StatusCode, ApiError> {
     let id =
         email_tokens::consume(&s.db, &req.token, Purpose::Verify)?.ok_or_else(invalid_token)?;
+    if !users::get(&s.db, id)?.has_password {
+        return Err(invalid_token());
+    }
     users::mark_verified(&s.db, id)?;
     tracing::info!(event = "email_verified", user_id = %id);
     Ok(StatusCode::NO_CONTENT)
@@ -268,7 +275,7 @@ struct ResetRequest {
     new_password: String,
 }
 
-/// Sets a new password from a reset token (single use). Revokes all sessions and refresh tokens.
+/// Sets a new password from a reset token (single use). Revokes all sign-in state (sessions, tokens, tickets).
 #[utoipa::path(post, path = "/api/password/reset", request_body = ResetRequest, responses(
     (status = 204),
     (status = 400, description = "invalid_token", body = ErrorBody),
@@ -283,8 +290,6 @@ async fn reset_password(
     let id = email_tokens::consume(&s.db, &req.token, Purpose::Reset)?.ok_or_else(invalid_token)?;
     let password_hash = super::hash(&s, req.new_password).await?;
     users::complete_reset(&s.db, id, &password_hash)?;
-    sessions::delete_all(&s.db, id)?;
-    email_tokens::delete_for_user(&s.db, id, Purpose::Reset)?;
     tracing::info!(event = "password_reset_completed", user_id = %id);
     Ok(StatusCode::NO_CONTENT)
 }

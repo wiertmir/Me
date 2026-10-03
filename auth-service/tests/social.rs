@@ -955,3 +955,110 @@ async fn admin_reset_purges_identities_only_when_email_unverified() {
         1
     );
 }
+
+#[tokio::test]
+async fn reset_revokes_tickets_and_intents_issued_before_it() {
+    let stub = Stub::spawn().await;
+    let app = TestApp::spawn_with_mail_and(|cfg| {
+        cfg.web_url = WEB.into();
+        for p in ["google", "microsoft"] {
+            cfg.providers.insert(p.into(), stub.config());
+        }
+    })
+    .await;
+    stub.profile(json!({"sub": "evil", "email": "victim@example.org", "name": "Mallory"}));
+    let b = signin(&app, "microsoft").await;
+    let attacker = b["session_token"].as_str().unwrap().to_string();
+    // Outstanding: a sign-in ticket, a link intent and a link ticket.
+    let ticket = ticket_of(&social(&app, "microsoft", "").await);
+    let (_, i) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/social/link-intent",
+            Some(&attacker),
+            json!({"provider": "google"}),
+        )
+        .await;
+    let intent_q = {
+        let u = i["start_url"].as_str().unwrap();
+        u[u.find('?').unwrap()..].to_string()
+    };
+    let link_ticket = link_ticket_of(&link_flow(&app, &attacker, "google").await);
+
+    forgot_and_reset(&app, "victim@example.org", "brand new passphrase").await;
+
+    let (s, body) = exchange(&app, &ticket).await;
+    assert_eq!(
+        (s, body["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_ticket"))
+    );
+    let (r, _) = start(&app, "google", &intent_q).await;
+    assert_redirect(&r, "/account/security?error=social_failed");
+    let (_, signed) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/signin",
+            None,
+            json!({"login": "victim@example.org", "password": "brand new passphrase"}),
+        )
+        .await;
+    let victim = signed["session_token"].as_str().unwrap();
+    let (s, body) = confirm(&app, victim, &link_ticket).await;
+    assert_eq!(
+        (s, body["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_ticket"))
+    );
+    // The attacker's old session is gone too.
+    let (s, _) = app
+        .api(
+            axum::http::Method::GET,
+            "/api/me",
+            Some(&attacker),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn no_verification_mail_for_passwordless_account() {
+    let stub = Stub::spawn().await;
+    let app = TestApp::spawn_with_mail_and(|cfg| {
+        cfg.web_url = WEB.into();
+        cfg.providers.insert("microsoft".into(), stub.config());
+    })
+    .await;
+    stub.profile(json!({"sub": "evil", "email": "victim@example.org", "name": "Mallory"}));
+    let b = signin(&app, "microsoft").await;
+    let id: Uuid = b["user"]["id"].as_str().unwrap().parse().unwrap();
+    let (s, _) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/email/resend",
+            None,
+            json!({"email": "victim@example.org"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert_eq!(app.mail_count(), 0);
+    // Defence in depth: even a verify token that somehow exists cannot verify a passwordless account.
+    let t = auth_service::email_tokens::create(
+        &app.state.db,
+        id,
+        auth_service::email_tokens::Purpose::Verify,
+    )
+    .unwrap();
+    let (s, body) = app
+        .api(
+            axum::http::Method::POST,
+            "/api/email/verify",
+            None,
+            json!({"token": t}),
+        )
+        .await;
+    assert_eq!(
+        (s, body["code"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_token"))
+    );
+    assert!(!users::get(&app.state.db, id).unwrap().email_verified);
+}
