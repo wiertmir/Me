@@ -43,13 +43,14 @@ impl TestApp {
                 "https://app.example/cb".into(),
             ],
         });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        cfg.issuer = base.clone(); // the issuer must be reachable: resource servers fetch its JWKS
         f(&mut cfg);
         let (mut state, seed) = build_state(cfg).unwrap();
         if mail {
             state.mail = Mailer::Memory(Default::default());
         }
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
         let router = app(state.clone());
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         Self {

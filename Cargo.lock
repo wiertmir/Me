@@ -308,10 +308,17 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
+ "jsonwebtoken",
+ "p256",
+ "rand",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
