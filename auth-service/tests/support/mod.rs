@@ -35,6 +35,14 @@ impl TestApp {
     async fn start(f: impl FnOnce(&mut Config), mail: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = Config::for_tests(dir.path().to_path_buf(), SERVICE_SECRET);
+        cfg.clients.push(auth_service::config::ClientConfig {
+            id: "test-client".into(),
+            name: "Test Client".into(),
+            redirect_uris: vec![
+                "http://127.0.0.1/callback".into(),
+                "https://app.example/cb".into(),
+            ],
+        });
         f(&mut cfg);
         let (mut state, seed) = build_state(cfg).unwrap();
         if mail {
@@ -46,7 +54,10 @@ impl TestApp {
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         Self {
             base,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
             state,
             seed_password: seed.unwrap_or_default(),
             _dir: dir,
@@ -138,4 +149,105 @@ impl TestApp {
         assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
         token
     }
+
+    /// Runs authorize, accept and the code exchange for the test client; returns the code and its PKCE verifier.
+    pub async fn auth_code(
+        &self,
+        session: &str,
+        scope: &str,
+        redirect_uri: &str,
+        nonce: Option<&str>,
+    ) -> (String, String) {
+        let (verifier, challenge) = pkce();
+        let mut q = vec![
+            ("response_type", "code"),
+            ("client_id", "test-client"),
+            ("redirect_uri", redirect_uri),
+            ("scope", scope),
+            ("state", "st4te"),
+            ("code_challenge", &challenge),
+            ("code_challenge_method", "S256"),
+        ];
+        if let Some(n) = nonce {
+            q.push(("nonce", n));
+        }
+        let resp = self
+            .http
+            .get(format!("{}/oauth/authorize", self.base))
+            .query(&q)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let loc = url::Url::parse(resp.headers()["location"].to_str().unwrap()).unwrap();
+        let ch = loc
+            .query_pairs()
+            .find(|(k, _)| k == "challenge")
+            .unwrap()
+            .1
+            .to_string();
+        let (s, b) = self
+            .api(
+                Method::POST,
+                &format!("/api/auth-requests/{ch}/accept"),
+                Some(session),
+                Value::Null,
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        let to = url::Url::parse(b["redirect_to"].as_str().unwrap()).unwrap();
+        (
+            to.query_pairs()
+                .find(|(k, _)| k == "code")
+                .unwrap()
+                .1
+                .to_string(),
+            verifier,
+        )
+    }
+
+    /// POSTs a form to /oauth/token; returns status, headers and JSON.
+    pub async fn token_post(
+        &self,
+        form: &[(&str, &str)],
+    ) -> (StatusCode, reqwest::header::HeaderMap, Value) {
+        let resp = self
+            .http
+            .post(format!("{}/oauth/token", self.base))
+            .form(form)
+            .send()
+            .await
+            .unwrap();
+        (
+            resp.status(),
+            resp.headers().clone(),
+            resp.json().await.unwrap_or(Value::Null),
+        )
+    }
+
+    /// Runs authorize → accept → token for the test client; returns the token response JSON.
+    pub async fn oauth_tokens(&self, session: &str, scope: &str) -> Value {
+        let (code, verifier) = self
+            .auth_code(session, scope, "http://127.0.0.1/callback", None)
+            .await;
+        let (s, _, b) = self
+            .token_post(&[
+                ("grant_type", "authorization_code"),
+                ("client_id", "test-client"),
+                ("code", &code),
+                ("redirect_uri", "http://127.0.0.1/callback"),
+                ("code_verifier", &verifier),
+            ])
+            .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        b
+    }
+}
+
+/// A PKCE (verifier, S256 challenge) pair.
+pub fn pkce() -> (String, String) {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
+    let verifier = auth_service::crypto::random_token();
+    let challenge = B64.encode(<sha2::Sha256 as sha2::Digest>::digest(verifier.as_bytes()));
+    (verifier, challenge)
 }

@@ -15,6 +15,7 @@ level = "info"
 
 [[clients]]
 id = "me-desktop"
+name = "Me Desktop"
 redirect_uris = ["http://127.0.0.1/callback"]
 
 # [smtp]

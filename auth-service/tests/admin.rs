@@ -342,7 +342,7 @@ async fn disabling_deletes_refresh_tokens() {
     let (id, _) = active_user(&app, &admin, "bob").await;
     app.state
         .db
-        .with(|c| c.execute("INSERT INTO refresh_tokens (token_hash, family_id, user_id, client_id, expires_at) VALUES ('h', 'f', ?1, 'c', 9999999999)", [&id]))
+        .with(|c| c.execute("INSERT INTO refresh_tokens (token_hash, family_id, user_id, client_id, scope, expires_at) VALUES ('h', 'f', ?1, 'c', '', 9999999999)", [&id]))
         .unwrap();
     call(
         &app,
@@ -404,7 +404,7 @@ async fn admin_reset_password_replaces_password_and_revokes_everything() {
     .unwrap();
     app.state
         .db
-        .with(|c| c.execute("INSERT INTO refresh_tokens (token_hash, family_id, user_id, client_id, expires_at) VALUES ('h', 'f', ?1, 'c', 9999999999)", [&id]))
+        .with(|c| c.execute("INSERT INTO refresh_tokens (token_hash, family_id, user_id, client_id, scope, expires_at) VALUES ('h', 'f', ?1, 'c', '', 9999999999)", [&id]))
         .unwrap();
 
     let (s, b) = call(

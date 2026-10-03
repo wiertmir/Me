@@ -73,6 +73,7 @@ pub struct ProviderConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientConfig {
     pub id: String,
+    pub name: String,
     pub redirect_uris: Vec<String>,
 }
 

@@ -4,10 +4,12 @@ pub mod db;
 pub mod email_tokens;
 pub mod logging;
 pub mod mail;
+pub mod oauth_store;
 pub mod openapi;
 pub mod ratelimit;
 pub mod routes;
 pub mod sessions;
+pub mod tokens;
 pub mod users;
 
 use std::sync::Arc;
@@ -32,6 +34,7 @@ pub struct AppState {
     /// Bounds concurrent Argon2 work (CPU and ~19 MiB each).
     pub hashing: Arc<tokio::sync::Semaphore>,
     pub mail: mail::Mailer,
+    pub signer: Arc<tokens::Signer>,
 }
 
 /// Opens the database under `cfg.data_dir`. Returns the one-time seed password when a user was seeded.
@@ -48,6 +51,9 @@ pub fn build_state(cfg: Config) -> anyhow::Result<(AppState, Option<String>)> {
         .unwrap_or_else(|| format!("{}@localhost", cfg.seed_username));
     let seed_password = users::seed(&db, &cfg.seed_username, &email)?;
     let mail = mail::Mailer::from_config(cfg.smtp.as_ref())?;
+    let signer = Arc::new(tokens::Signer::load_or_create(
+        &cfg.data_dir.join("signing.key"),
+    )?);
     Ok((
         AppState {
             cfg: Arc::new(cfg),
@@ -55,6 +61,7 @@ pub fn build_state(cfg: Config) -> anyhow::Result<(AppState, Option<String>)> {
             limiter: Default::default(),
             hashing: Arc::new(tokio::sync::Semaphore::new(HASH_PERMITS)),
             mail,
+            signer,
         },
         seed_password,
     ))
