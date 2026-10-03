@@ -99,6 +99,25 @@ public class PageTests : PageTest
     }
 
     [Fact]
+    public void ConfirmedAction_ThatCompletesLater_StillRefreshesTheList()
+    {
+        const string list = "GET /api/me/app-passwords";
+        Stub.Reply(list, HttpStatusCode.OK, """[{"id":"6f1c1c10-0000-4000-8000-000000000001","label":"Phone","created_at":"2026-01-01T00:00:00Z","last_used":null}]""")
+            .Reply("DELETE /api/me/app-passwords/6f1c1c10-0000-4000-8000-000000000001", HttpStatusCode.NoContent, "");
+        var cut = Render<AppPasswords>();
+        var gate = new TaskCompletionSource();
+        Stub.Gate = gate.Task; // as in the real app: the answer arrives after the click handler has returned
+
+        Button(cut, "Delete").Click();
+        cut.Find("dialog button:last-of-type").Click();
+        Stub.Reply(list, HttpStatusCode.OK, "[]");
+        gate.SetResult();
+
+        cut.WaitForAssertion(() => Assert.Contains("No app passwords yet.", cut.Markup));
+        Assert.Contains("Deleted app password Phone.", cut.Markup);
+    }
+
+    [Fact]
     public void Unauthorized_NavigatesToSessionExpired_WithForceLoad()
     {
         Stub.Reply("GET /api/me/app-passwords", HttpStatusCode.Unauthorized, Error("unauthorized"));

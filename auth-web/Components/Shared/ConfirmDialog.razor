@@ -39,6 +39,9 @@
         await Close();
         await OnDone.InvokeAsync();
         await action();
+        // The action changed the parent's state from this component's handler, which re-renders only this
+        // component. Going through the parent's callback again makes the parent render the result.
+        await OnDone.InvokeAsync();
     }
 
     // Close first (focus goes back to the button that opened it), and mark it closed so the event it fires is ignored.
