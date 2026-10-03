@@ -1,0 +1,74 @@
+use std::sync::LazyLock;
+
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
+};
+use axum::http::StatusCode;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use common::{ApiError, ApiResult};
+use sha2::{Digest, Sha256};
+
+pub const MAX_PASSWORD_BYTES: usize = 1024;
+
+pub fn hash_password(pw: &str) -> String {
+    Argon2::default().hash_password(pw.as_bytes()).expect("argon2 hashing with default params").to_string()
+}
+
+pub fn verify_password(pw: &str, hash: &str) -> bool {
+    PasswordHash::new(hash).is_ok_and(|h| Argon2::default().verify_password(pw.as_bytes(), &h).is_ok())
+}
+
+/// Verifies against a throwaway hash so unknown users cost the same time as wrong passwords.
+pub fn verify_dummy(pw: &str) {
+    static DUMMY: LazyLock<String> = LazyLock::new(|| hash_password("dummy password for timing"));
+    verify_password(pw, &DUMMY);
+}
+
+fn validation(msg: &str) -> ApiError {
+    ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "validation", msg)
+}
+
+/// Upper bound only; used before hashing anything a client sent.
+pub fn check_password_size(pw: &str) -> ApiResult<()> {
+    if pw.len() > MAX_PASSWORD_BYTES {
+        return Err(validation("password is too long"));
+    }
+    Ok(())
+}
+
+pub fn validate_password(pw: &str) -> ApiResult<()> {
+    check_password_size(pw)?;
+    if pw.chars().count() < 12 {
+        return Err(validation("password must be at least 12 characters"));
+    }
+    Ok(())
+}
+
+/// 32 random bytes, base64url without padding.
+pub fn random_token() -> String {
+    URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
+}
+
+pub fn sha256_hex(s: &str) -> String {
+    Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_roundtrip_and_token_shape() {
+        let h = hash_password("correct horse battery");
+        assert!(h.starts_with("$argon2id$"));
+        assert!(verify_password("correct horse battery", &h));
+        assert!(!verify_password("wrong", &h));
+        assert!(!verify_password("x", "not a hash"));
+        assert_eq!(random_token().len(), 43);
+        assert_eq!(sha256_hex("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert!(validate_password("short").is_err());
+        assert!(validate_password(&"a".repeat(1025)).is_err());
+        assert!(validate_password("twelve chars").is_ok());
+    }
+}

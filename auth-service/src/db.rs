@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS identities (
     UNIQUE (provider, provider_subject)
 );
 CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT NOT NULL UNIQUE,
     token_hash TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,

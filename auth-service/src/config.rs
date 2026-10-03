@@ -31,7 +31,7 @@ impl Default for LogConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct SmtpConfig {
     pub host: String,
     #[serde(default = "default_smtp_port")]
@@ -45,7 +45,7 @@ fn default_smtp_port() -> u16 {
     587
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ProviderConfig {
     pub client_id: String,
     pub client_secret: String,
@@ -57,7 +57,7 @@ pub struct ClientConfig {
     pub redirect_uris: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Config {
     pub issuer: String,
     pub web_url: String,
@@ -77,6 +77,44 @@ pub struct Config {
     pub providers: HashMap<String, ProviderConfig>,
     #[serde(default)]
     pub clients: Vec<ClientConfig>,
+}
+
+impl std::fmt::Debug for SmtpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("from", &self.from)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig").field("client_id", &self.client_id).field("client_secret", &"<redacted>").finish()
+    }
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("issuer", &self.issuer)
+            .field("web_url", &self.web_url)
+            .field("listen", &self.listen)
+            .field("data_dir", &self.data_dir)
+            .field("service_secret", &"<redacted>")
+            .field("signup", &self.signup)
+            .field("seed_username", &self.seed_username)
+            .field("seed_email", &self.seed_email)
+            .field("audience", &self.audience)
+            .field("log", &self.log)
+            .field("smtp", &self.smtp)
+            .field("providers", &self.providers)
+            .field("clients", &self.clients)
+            .finish()
+    }
 }
 
 fn default_audience() -> String {

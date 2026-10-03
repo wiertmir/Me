@@ -11,7 +11,7 @@ async fn main() -> anyhow::Result<()> {
     let (state, seed_password) = build_state(cfg)?;
     if let Some(password) = seed_password {
         // The one-time seed password is the only secret ever logged.
-        tracing::warn!(password = %password, "seeded admin user; change the password at first sign-in");
+        tracing::warn!(one_time_password = %password, "seeded admin user; this one-time password must be changed at first sign-in");
     }
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(listen = %listener.local_addr()?, "auth-service started");

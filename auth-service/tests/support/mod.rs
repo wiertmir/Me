@@ -22,7 +22,6 @@ impl TestApp {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = Config::for_tests(dir.path().to_path_buf(), SERVICE_SECRET);
         f(&mut cfg);
-        // Task 2 returns the seed password here.
         let (state, seed) = build_state(cfg).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -54,5 +53,24 @@ impl TestApp {
         let bytes = resp.bytes().await.unwrap();
         let json = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::Null) };
         (status, json)
+    }
+
+    /// Signs in the seed user, replaces the one-time password with "correct horse battery"; returns the session token.
+    pub async fn admin_session(&self) -> String {
+        let (s, b) = self
+            .api(Method::POST, "/api/signin", None, serde_json::json!({"login": "wiertmir", "password": self.seed_password}))
+            .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        let token = b["session_token"].as_str().unwrap().to_string();
+        let (s, b) = self
+            .api(
+                Method::POST,
+                "/api/password/change",
+                Some(&token),
+                serde_json::json!({"current_password": self.seed_password, "new_password": "correct horse battery"}),
+            )
+            .await;
+        assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
+        token
     }
 }
