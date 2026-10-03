@@ -111,6 +111,22 @@ pub fn set_password(db: &Db, id: Uuid, pw: &str, must_change: bool) -> ApiResult
     Ok(())
 }
 
+/// Hash computed by the caller (off the async thread). Reset proves control of the email, so it also verifies it.
+pub fn complete_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<()> {
+    db.with(|c| {
+        c.execute(
+            "UPDATE users SET password_hash = ?1, must_change_password = 0, email_verified = 1 WHERE id = ?2",
+            params![hash, id.to_string()],
+        )
+    })?;
+    Ok(())
+}
+
+pub fn mark_verified(db: &Db, id: Uuid) -> ApiResult<()> {
+    db.with(|c| c.execute("UPDATE users SET email_verified = 1 WHERE id = ?1", [id.to_string()]))?;
+    Ok(())
+}
+
 pub fn set_display_name(db: &Db, id: Uuid, name: &str) -> ApiResult<()> {
     db.with(|c| c.execute("UPDATE users SET display_name = ?1 WHERE id = ?2", params![name, id.to_string()]))?;
     Ok(())

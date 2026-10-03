@@ -42,6 +42,15 @@ pub fn delete_others(db: &Db, user: Uuid, keep: Uuid) -> ApiResult<()> {
     Ok(())
 }
 
+/// Revokes every session and refresh token of the user.
+pub fn delete_all(db: &Db, user: Uuid) -> ApiResult<()> {
+    db.with(|c| {
+        c.execute("DELETE FROM sessions WHERE user_id = ?1", [user.to_string()])?;
+        c.execute("DELETE FROM refresh_tokens WHERE user_id = ?1", [user.to_string()])
+    })?;
+    Ok(())
+}
+
 /// Finds a live session, bumps `last_seen`, and loads its enabled user.
 fn lookup(db: &Db, token: &str) -> ApiResult<Option<(Uuid, Uuid)>> {
     let now = Utc::now().timestamp();

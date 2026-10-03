@@ -1,5 +1,7 @@
 #![allow(dead_code)]
-use auth_service::{AppState, Config, app, build_state};
+use std::sync::{Arc, Mutex};
+
+use auth_service::{AppState, Config, app, build_state, mail::{Email, Mailer}};
 use axum::http::{Method, StatusCode};
 use serde_json::Value;
 
@@ -19,10 +21,22 @@ impl TestApp {
     }
 
     pub async fn spawn_with(f: impl FnOnce(&mut Config)) -> Self {
+        Self::start(f, false).await
+    }
+
+    /// Like `spawn`, with an in-memory mailer so verification and reset mail is enabled.
+    pub async fn spawn_with_mail() -> Self {
+        Self::start(|_| {}, true).await
+    }
+
+    async fn start(f: impl FnOnce(&mut Config), mail: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = Config::for_tests(dir.path().to_path_buf(), SERVICE_SECRET);
         f(&mut cfg);
-        let (state, seed) = build_state(cfg).unwrap();
+        let (mut state, seed) = build_state(cfg).unwrap();
+        if mail {
+            state.mail = Mailer::Memory(Default::default());
+        }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let router = app(state.clone());
@@ -34,6 +48,30 @@ impl TestApp {
             seed_password: seed.unwrap_or_default(),
             _dir: dir,
         }
+    }
+
+    fn outbox(&self) -> Arc<Mutex<Vec<Email>>> {
+        match &self.state.mail {
+            Mailer::Memory(m) => m.clone(),
+            _ => panic!("app was not spawned with mail"),
+        }
+    }
+
+    pub fn mail_count(&self) -> usize {
+        self.outbox().lock().unwrap().len()
+    }
+
+    /// The `token=` value from the newest mail body.
+    pub fn last_mail_token(&self) -> String {
+        let outbox = self.outbox();
+        let mails = outbox.lock().unwrap();
+        let body = &mails.last().expect("no mail sent").body;
+        let rest = body.split("token=").nth(1).expect("no token in mail");
+        rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')).next().unwrap().to_string()
+    }
+
+    pub fn last_mail_body(&self) -> String {
+        self.outbox().lock().unwrap().last().expect("no mail sent").body.clone()
     }
 
     /// Sends X-Service-Secret, optional bearer session; returns status and JSON (Null if empty).

@@ -31,6 +31,16 @@ impl Default for LogConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    /// Plain connection upgraded with STARTTLS (usually port 587).
+    #[default]
+    Starttls,
+    /// TLS from the first byte (usually port 465).
+    Implicit,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct SmtpConfig {
     pub host: String,
@@ -39,6 +49,8 @@ pub struct SmtpConfig {
     pub username: Option<String>,
     pub password: Option<String>,
     pub from: String,
+    #[serde(default)]
+    pub tls: SmtpTls,
 }
 
 fn default_smtp_port() -> u16 {
@@ -87,6 +99,7 @@ impl std::fmt::Debug for SmtpConfig {
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .field("from", &self.from)
+            .field("tls", &self.tls)
             .finish()
     }
 }

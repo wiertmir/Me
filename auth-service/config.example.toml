@@ -20,6 +20,10 @@ redirect_uris = ["http://127.0.0.1/callback"]
 # [smtp]
 # host = "smtp.example.com"
 # from = "Me <no-reply@example.com>"
+# port = 587
+# tls = "starttls"   # or "implicit" (port 465)
+# username = ""
+# password = ""
 #
 # [providers.google]
 # client_id = ""
