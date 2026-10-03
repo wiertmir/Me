@@ -82,6 +82,18 @@ public class PageTests : PageTest
     }
 
     [Fact]
+    public void Security_PasswordLink_ReadsSetAPassword_OnlyForAnAccountWithoutOne()
+    {
+        var link = (IRenderedComponent<Security> cut) => cut.Find("a[href^='/change-password']").TextContent;
+        Assert.Equal("Change password", link(Render<Security>()));
+
+        Stub.Reply("GET /api/me", HttpStatusCode.OK, UserJson("alice", hasPassword: false));
+        var cut = Render<Security>();
+        cut.WaitForAssertion(() => Assert.Equal("Set a password", link(cut)));
+        Assert.Contains("Setting a password signs out your other devices and removes your app passwords.", cut.Markup);
+    }
+
+    [Fact]
     public void AppPassword_IsShownOnce_NotListed_AndGoneAfterDismiss()
     {
         Stub.Reply("POST /api/me/app-passwords", HttpStatusCode.Created,

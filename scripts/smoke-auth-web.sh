@@ -217,6 +217,7 @@ form_post "$G" "$WEB/signup" signup $(SIGNUP_FIELDS alice alice@example.test "$P
 [ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "S1a sign-up with mail disabled signs in and goes to /account" $? "$CODE $LOC"
 req "$G" "$WEB/account"
 [ "$CODE" = 200 ] && grep -q alice "$T/body"; check "S1b /account shows the new username" $? "$CODE"
+grep -q '>not verified<' "$T/body"; check "S1c without mail the sign-up address is shown as not verified" $?
 H="$T/h.jar"
 form_post "$H" "$WEB/signup" signup $(SIGNUP_FIELDS alice other@example.test "$PW1")
 [ "$CODE" = 200 ] && grep -q "That username or email is already in use" "$T/body"; check "S2a duplicate username: 200 with the conflict message" $? "$CODE"
@@ -356,6 +357,33 @@ req "$M" "$WEB/account"
 grep -q 'href="/admin/users"' "$T/body"; [ $? -ne 0 ]; check "A10 non-admin navigation has no Users link" $?
 req "$N" "$WEB/account"
 grep -q 'href="/admin/users"' "$T/body"; check "A11 admin navigation has the Users link" $?
+
+echo "== an account without a password sets one"
+# No endpoint creates a passwordless account without a real provider, so dave's hash is removed in the
+# database: from then on he looks exactly like an account created through social sign-in.
+python3 - "$T/data-acct/auth.db" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1], timeout=10)
+db.execute("UPDATE users SET password_hash = NULL WHERE username = 'dave'")
+db.commit()
+PY
+req "$N" "$WEB/change-password"
+grep -q "<h1>Change password</h1>" "$T/body" && grep -q 'name="Input.Current"' "$T/body" \
+  && grep -q "signs out your other devices and removes your app passwords" "$T/body"
+check "P1 with a password: 'Change password', a current-password field and the sign-out notice" $? "$CODE"
+req "$M" "$WEB/change-password"
+[ "$CODE" = 200 ] && grep -q "<h1>Set a password</h1>" "$T/body" && ! grep -q 'name="Input.Current"' "$T/body"
+check "P2 without a password: 'Set a password' and no current-password field" $? "$CODE"
+req "$M" "$WEB/account/security"
+grep -q '>Set a password</a>' "$T/body"; check "P3 the Security page link reads 'Set a password'" $?
+form_post "$M" "$WEB/change-password" change-password --data-urlencode "Input.New=$PW3" --data-urlencode "Input.Confirm=$PW3"
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "P4 setting the password without a current one succeeds" $? "$CODE $LOC"
+P="$T/p.jar"
+form_post "$P" "$WEB/signin" signin --data-urlencode "Input.Login=dave" --data-urlencode "Input.Password=$PW3"
+[ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "P5 sign-in with the password just set works" $? "$CODE $LOC"
+req "$M" "$WEB/change-password"
+grep -q "<h1>Change password</h1>" "$T/body" && grep -q 'name="Input.Current"' "$T/body"
+check "P6 afterwards the page asks for the current password again" $? "$CODE"
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "ALL PASSED"; else echo "$FAILS FAILED"; echo "--- web log tail"; tail -15 "$T/web.log"; fi

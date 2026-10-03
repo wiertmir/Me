@@ -707,6 +707,75 @@ async fn unlink_revokes_other_sessions_and_refresh_tokens_but_keeps_app_password
     assert_eq!(s, StatusCode::OK);
 }
 
+async fn change_password(app: &TestApp, session: &str, body: Value) -> (StatusCode, Value) {
+    app.api(
+        axum::http::Method::POST,
+        "/api/password/change",
+        Some(session),
+        body,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn social_only_user_sets_a_password_without_a_current_one() {
+    let (app, stub) = setup(&["google"]).await;
+    stub.profile(google("g1", Some("new@example.org"), true));
+    let b = signin(&app, "google").await;
+    assert_eq!(b["user"]["has_password"], false);
+    let session = b["session_token"].as_str().unwrap().to_string();
+
+    let (s, b) = change_password(&app, &session, json!({"new_password": "short"})).await;
+    assert_eq!(
+        (s, b["code"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("validation"))
+    );
+    let (s, b) = change_password(&app, &session, json!({"new_password": PASSWORD})).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
+    let (s, b) = app
+        .api(
+            axum::http::Method::GET,
+            "/api/me",
+            Some(&session),
+            Value::Null,
+        )
+        .await;
+    assert_eq!((s, &b["has_password"]), (StatusCode::OK, &json!(true)));
+    password_session(&app, "new").await;
+
+    // Now that a password exists, the current one is required again.
+    for body in [
+        json!({"new_password": "another long passphrase"}),
+        json!({"current_password": "", "new_password": "another long passphrase"}),
+        json!({"current_password": null, "new_password": "another long passphrase"}),
+    ] {
+        let (s, b) = change_password(&app, &session, body).await;
+        assert_eq!(
+            (s, b["code"].as_str()),
+            (StatusCode::UNAUTHORIZED, Some("invalid_credentials"))
+        );
+    }
+    password_session(&app, "new").await;
+}
+
+#[tokio::test]
+async fn user_with_a_password_cannot_omit_the_current_one() {
+    let (app, _stub) = setup(&[]).await;
+    make_user(&app, "alice", "alice@example.org", true, true);
+    let session = password_session(&app, "alice").await;
+    let (s, b) = change_password(
+        &app,
+        &session,
+        json!({"new_password": "another long passphrase"}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["code"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("invalid_credentials"))
+    );
+    password_session(&app, "alice").await;
+}
+
 #[tokio::test]
 async fn state_without_or_with_wrong_cookie_is_rejected() {
     let (app, stub) = setup(&["google"]).await;

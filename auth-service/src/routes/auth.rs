@@ -183,15 +183,20 @@ async fn signout(
 
 #[derive(Deserialize, ToSchema)]
 struct ChangePasswordRequest {
-    current_password: String,
+    /// Required when the account has a password. An account without one (created through social
+    /// sign-in) omits it or sends an empty string, and so sets its first password; a value is ignored.
+    #[serde(default)]
+    current_password: Option<String>,
     new_password: String,
 }
 
-/// Change the password
+/// Change or set the password
 ///
-/// Sets a new password and clears the forced-change flag. Signs the user out everywhere else: revokes
-/// their other sessions, all refresh tokens, authorization codes, pending social tickets and app
-/// passwords; only the session making the request survives. Allowed while a password change is pending.
+/// Sets a new password and clears the forced-change flag. An account that has a password must give the
+/// current one; an account without one (`has_password` false) sets its first password without it.
+/// Signs the user out everywhere else: revokes their other sessions, all refresh tokens, authorization
+/// codes, pending social tickets and app passwords; only the session making the request survives.
+/// Allowed while a password change is pending.
 #[utoipa::path(
     post, path = "/api/password/change",
     tag = "auth",
@@ -199,7 +204,7 @@ struct ChangePasswordRequest {
     security(("service_secret" = [], "session" = [])),
     responses(
     (status = 204, description = "password changed; everything but this session revoked"),
-    (status = 401, description = "`invalid_credentials`: the current password is wrong; `unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
+    (status = 401, description = "`invalid_credentials`: the current password is wrong, or missing although the account has a password; `unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
     (status = 422, description = "`validation`: malformed body, new password shorter than 12 characters, or a password longer than 1024 bytes", body = ErrorBody),
     (status = 429, description = "`rate_limited`: too many failed attempts; see `Retry-After`", body = ErrorBody),
 )
@@ -209,21 +214,22 @@ async fn change_password(
     PendingUser(me): PendingUser,
     ApiJson(req): ApiJson<ChangePasswordRequest>,
 ) -> Result<StatusCode, SigninError> {
-    crypto::check_password_size(&req.current_password)?;
+    let given = req.current_password.unwrap_or_default();
+    crypto::check_password_size(&given)?;
     crypto::validate_password(&req.new_password)?;
-    let key = format!("user:{}", me.user.username);
-    s.limiter.begin(&key).map_err(SigninError::Limited)?;
     let current = users::password_hash(&s.db, me.user.id)?;
-    let ok = match current.clone() {
-        Some(hash) => verify(&s, req.current_password, Some(hash)).await,
-        None => false,
-    };
-    if !ok {
-        return Err(invalid_credentials().into());
+    // Without a stored hash there is nothing to verify (and nothing to guess, so nothing is counted):
+    // the session is the proof. `change_password` below re-checks that the hash is still absent.
+    if let Some(hash) = current.clone() {
+        let key = format!("user:{}", me.user.username);
+        s.limiter.begin(&key).map_err(SigninError::Limited)?;
+        if given.is_empty() || !verify(&s, given, Some(hash)).await {
+            return Err(invalid_credentials().into());
+        }
+        s.limiter.clear(&key);
     }
-    s.limiter.clear(&key);
     let new_hash = super::hash(&s, req.new_password).await?;
-    // False when the stored password changed while this request was verifying against the old one.
+    // False when the stored password changed while this request was being checked against the old state.
     if !users::change_password(
         &s.db,
         me.user.id,
@@ -233,6 +239,6 @@ async fn change_password(
     )? {
         return Err(invalid_credentials().into());
     }
-    tracing::info!(event = "password_changed", user_id = %me.user.id);
+    tracing::info!(event = "password_changed", user_id = %me.user.id, first_password = current.is_none());
     Ok(StatusCode::NO_CONTENT)
 }

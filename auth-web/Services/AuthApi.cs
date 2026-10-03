@@ -17,7 +17,8 @@ public sealed class AuthApi(HttpClient http, RequestContext context, ILogger<Aut
     public async Task<ApiResult> SignOut(string session) =>
         await Send<object>(HttpMethod.Post, "/api/signout", session, null);
 
-    public async Task<ApiResult> ChangePassword(string session, string current, string @new) =>
+    /// <summary><paramref name="current"/> is null for an account that has no password yet.</summary>
+    public async Task<ApiResult> ChangePassword(string session, string? current, string @new) =>
         await Send<object>(HttpMethod.Post, "/api/password/change", session,
             new { current_password = current, new_password = @new });
 

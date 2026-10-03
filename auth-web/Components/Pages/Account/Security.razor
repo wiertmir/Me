@@ -2,7 +2,7 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using AuthWeb.Components.Security
-@inject NavigationManager Nav
+@inherits ApiComponent
 
 <PageTitle>Security</PageTitle>
 <h1>Security</h1>
@@ -14,8 +14,8 @@
 
 <section aria-labelledby="password-h">
     <h2 id="password-h">Password</h2>
-    <p><a href="/change-password?returnUrl=/account/security%3Fnotice%3Dpassword">Change password</a></p>
-    <p class="hint">Changing your password signs out your other devices and removes your app passwords.</p>
+    <p><a href="/change-password?returnUrl=/account/security%3Fnotice%3Dpassword">@(hasPassword ? "Change password" : "Set a password")</a></p>
+    <p class="hint">@(hasPassword ? "Changing your password" : "Setting a password") signs out your other devices and removes your app passwords.</p>
 </section>
 
 <SessionList />
@@ -23,9 +23,10 @@
 @code {
     private LinkedMethods? linked;
     private string? urlNotice;
+    private bool hasPassword = true; // until the service says otherwise
 
     // ?linked= and ?error= come from the service; they only pick one of these fixed texts and are never shown.
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         var q = System.Web.HttpUtility.ParseQueryString(new Uri(Nav.Uri).Query);
         if (q["notice"] == "password") urlNotice = "Password changed.";
@@ -37,5 +38,7 @@
                 "social_failed" => "Linking failed. Try again.",
                 _ => "Something went wrong. Try again.",
             };
+        var me = await Call(t => Api.Me(t));
+        if (me is { Ok: true }) hasPassword = me.Value!.HasPassword;
     }
 }

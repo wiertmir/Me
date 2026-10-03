@@ -46,6 +46,7 @@ public abstract class PageTest : BunitContext
             new RequestContext(new HttpContextAccessor()), NullLogger<AuthApi>.Instance);
         Services.AddSingleton(api);
         Stub.Reply("GET /api/providers", HttpStatusCode.OK, """["github"]""");
+        Stub.Reply("GET /api/me", HttpStatusCode.OK, UserJson("alice"));
         var auth = AddAuthorization();
         auth.SetAuthorized("alice");
         auth.SetClaims(new Claim(SessionPrincipal.SessionClaim, "tok"));
@@ -53,9 +54,9 @@ public abstract class PageTest : BunitContext
 
     protected static string Error(string code, string message = "m") => $$"""{"code":"{{code}}","message":"{{message}}"}""";
 
-    protected static string UserJson(string name, bool admin = false) => $$"""
+    protected static string UserJson(string name, bool admin = false, bool hasPassword = true) => $$"""
         {"id":"{{Guid.NewGuid()}}","username":"{{name}}","email":"{{name}}@x.test","email_verified":true,"display_name":"{{name}}",
-         "is_admin":{{(admin ? "true" : "false")}},"must_change_password":false,"has_password":true,"disabled":false,"created_at":"2026-01-02T03:04:05Z"}
+         "is_admin":{{(admin ? "true" : "false")}},"must_change_password":false,"has_password":{{(hasPassword ? "true" : "false")}},"disabled":false,"created_at":"2026-01-02T03:04:05Z"}
         """;
 
     protected static AngleSharp.Dom.IElement Button(IRenderedComponent<Microsoft.AspNetCore.Components.IComponent> cut, string text) =>
