@@ -16,14 +16,18 @@ async fn main() -> anyhow::Result<()> {
         _ => anyhow::bail!(USAGE),
     };
     let cfg = Config::load(&PathBuf::from(path))?;
-    logging::init(&cfg.log);
     if let Some(username) = reset_user {
-        // Recovery command: no server is started. The password goes to stdout, once, and nowhere else.
+        // Recovery command: no server is started. Standard output carries exactly one line, the
+        // password; the log and the explanation go to standard error.
+        logging::init_stderr(&cfg.log);
         let password = reset_password(&cfg, username)?;
-        println!("one-time password for {username}: {password}");
-        eprintln!("Sign in with it; you will be asked to choose a new password.");
+        eprintln!(
+            "One-time password for {username} (below). Sign in with it; you will be asked to choose a new one."
+        );
+        println!("{password}");
         return Ok(());
     }
+    logging::init(&cfg.log);
     let listen = cfg.listen;
     let (state, seed_password) = build_state(cfg)?;
     if let Some(password) = seed_password {

@@ -1229,6 +1229,132 @@ async fn reset_revokes_tickets_and_intents_issued_before_it() {
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
 
+/// The attacker attaches their identity while the address is unproven, sets a password so the account can
+/// get a verification mail, and has the victim click it. Proving the address must leave the attacker
+/// with nothing but a password that "Forgot password" then replaces.
+#[tokio::test]
+async fn verifying_an_address_removes_identities_and_sessions_attached_before_it() {
+    let stub = Stub::spawn().await;
+    let app = TestApp::spawn_with_mail_and(|cfg| {
+        cfg.web_url = WEB.into();
+        cfg.providers.insert("microsoft".into(), stub.config());
+    })
+    .await;
+    let post =
+        |path: &'static str, body: Value| app.api(axum::http::Method::POST, path, None, body);
+    stub.profile(json!({"sub": "evil", "email": "victim@example.org", "name": "Mallory"}));
+    let b = signin(&app, "microsoft").await;
+    assert_eq!(b["user"]["email_verified"], false);
+    let id: Uuid = b["user"]["id"].as_str().unwrap().parse().unwrap();
+    let attacker = b["session_token"].as_str().unwrap().to_string();
+    let attacker_pw = "the attacker's passphrase";
+    let (s, b) = change_password(&app, &attacker, json!({"new_password": attacker_pw})).await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
+    let refresh = app.oauth_tokens(&attacker, "openid").await["refresh_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, _) = post("/api/email/resend", json!({"email": "victim@example.org"})).await;
+    assert_eq!((s, app.mail_count()), (StatusCode::NO_CONTENT, 1));
+
+    // The victim follows the link.
+    let (s, _) = post("/api/email/verify", json!({"token": app.last_mail_token()})).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(users::get(&app.state.db, id).unwrap().email_verified);
+
+    assert!(
+        social_store::list_identities(&app.state.db, id)
+            .unwrap()
+            .is_empty()
+    );
+    let (s, _) = app
+        .api(
+            axum::http::Method::GET,
+            "/api/me",
+            Some(&attacker),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _, b) = app
+        .token_post(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", "test-client"),
+            ("refresh_token", &refresh),
+        ])
+        .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant"))
+    );
+    assert_redirect(
+        &social(&app, "microsoft", "").await,
+        "/signin?error=account_exists",
+    );
+
+    // The victim does not know the attacker's password; "Forgot password" replaces it.
+    forgot_and_reset(&app, "victim@example.org", "the victim's own passphrase").await;
+    let signin_with = |pw: &'static str| {
+        post(
+            "/api/signin",
+            json!({"login": "victim@example.org", "password": pw}),
+        )
+    };
+    let (s, b) = signin_with("the attacker's passphrase").await;
+    assert_eq!(
+        (s, b["code"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("invalid_credentials"))
+    );
+    assert_eq!(
+        signin_with("the victim's own passphrase").await.0,
+        StatusCode::OK
+    );
+    assert_redirect(
+        &social(&app, "microsoft", "").await,
+        "/signin?error=account_exists",
+    );
+}
+
+#[tokio::test]
+async fn ordinary_verification_keeps_the_password_and_a_verified_account_keeps_its_identities() {
+    let app = TestApp::spawn_with_mail().await;
+    let post =
+        |path: &'static str, body: Value| app.api(axum::http::Method::POST, path, None, body);
+    let (s, b) = post(
+        "/api/signup",
+        json!({"username": "alice", "email": "alice@example.org", "password": PASSWORD}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let id: Uuid = b["user"]["id"].as_str().unwrap().parse().unwrap();
+    let (s, _) = post("/api/email/verify", json!({"token": app.last_mail_token()})).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let session = password_session(&app, "alice").await;
+    assert!(
+        identities(&app, &session)
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Only the step from unproven to proven purges: a verify token used on an already verified account
+    // leaves what was linked afterwards, and the session, alone.
+    link(&app, id, "google", "g1");
+    let stray = auth_service::email_tokens::create(
+        &app.state.db,
+        id,
+        auth_service::email_tokens::Purpose::Verify,
+    )
+    .unwrap();
+    let (s, _) = post("/api/email/verify", json!({"token": stray})).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert_eq!(
+        identities(&app, &session).await.as_array().unwrap().len(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn no_verification_mail_for_passwordless_account() {
     let stub = Stub::spawn().await;

@@ -41,8 +41,11 @@ fn invalid_token() -> ApiError {
 }
 
 async fn send_token_mail(s: &AppState, user: &User, purpose: Purpose) -> Result<(), ApiError> {
-    // A passwordless account was created socially, possibly with an address its creator does not own;
-    // verifying it by mail would bless that. It becomes verified only through a password reset.
+    // A passwordless account was created socially, possibly with an address its creator does not own, so
+    // it gets no verification mail while it has no password. Once it sets one it is treated like any
+    // password sign-up; that is safe because verifying through the mailed link removes every identity
+    // linked before that moment and revokes all sign-in state (`users::mark_verified`), as a password
+    // reset on an account with an unverified address does.
     if matches!(purpose, Purpose::Verify) && !user.has_password {
         return Ok(());
     }
@@ -190,14 +193,18 @@ struct TokenRequest {
 
 /// Verify an email address
 ///
-/// Confirms an email address with the single-use token from the verification mail.
+/// Confirms an email address with the single-use token from the verification mail. When this is what
+/// turns the address from unverified to verified, every identity linked to the account before that moment
+/// is removed and all of its sign-in state is revoked (sessions, refresh tokens, authorization codes,
+/// pending social tickets, reset links, app passwords): anything attached while the address was unproven
+/// may belong to someone else. The password is kept.
 #[utoipa::path(
     post, path = "/api/email/verify",
     tag = "auth",
     request_body(content = TokenRequest, example = json!({"token": "k3T9v2Hq0sZb1m8Y4pJx7WcD5nRfA6eLgUoQiVtXyBs"})),
     security(("service_secret" = [])),
     responses(
-    (status = 204, description = "email address verified"),
+    (status = 204, description = "email address verified; identities and sign-in state from before it removed"),
     (status = 400, description = "`invalid_token`: unknown, expired or already used token", body = ErrorBody),
     (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
     (status = 422, description = "`validation`: the body is missing or malformed, or a field is invalid (see `message`)", body = ErrorBody),

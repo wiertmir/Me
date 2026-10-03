@@ -176,9 +176,14 @@ Decided during implementation; each closes a way to take over an account.
   reliable verification signal, so a Microsoft identity is never linked by
   email and an account created from one has an unverified address.
 - **No verification mail for passwordless accounts.** An account created
-  through a provider may carry an address its creator does not own; mailing a
-  verification link would let the real owner bless it by accident. Such an
-  account's address becomes verified only through a password reset.
+  through a provider may carry an address its creator does not own, so it gets
+  no verification mail while it has no password. Once it sets one it is
+  treated like any password sign-up, which is safe because of the next rule.
+- **Proving an address evicts whatever was there before.** Verifying an
+  address through the mailed link removes every identity linked before that
+  moment and revokes all sign-in state. A password reset on an account with an
+  unverified address does the same. The password survives verification; an
+  owner who did not set it uses "Forgot password", which replaces it.
 - **A password reset revokes all sign-in state** — sessions, refresh tokens,
   authorization codes, pending social tickets, link intents and link tickets,
   other reset links, app passwords — in the transaction that stores the new

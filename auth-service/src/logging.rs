@@ -14,8 +14,22 @@ use crate::config::{LogConfig, LogFormat};
 static REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 pub fn init(cfg: &LogConfig) {
+    init_to(cfg, std::io::stdout)
+}
+
+/// For one-shot commands whose standard output is their result: the log goes to standard error.
+pub fn init_stderr(cfg: &LogConfig) {
+    init_to(cfg, std::io::stderr)
+}
+
+fn init_to<W>(cfg: &LogConfig, writer: W)
+where
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
+{
     let filter = EnvFilter::try_new(&cfg.level).unwrap_or_else(|_| EnvFilter::new("info"));
-    let b = tracing_subscriber::fmt().with_env_filter(filter);
+    let b = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(writer);
     match cfg.format {
         LogFormat::Pretty => b.init(),
         LogFormat::Json => b.json().init(),

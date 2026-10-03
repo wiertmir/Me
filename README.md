@@ -262,7 +262,8 @@ directory, with the same configuration file (and the same `ME_AUTH__…` variabl
 auth-service /etc/me/auth.toml reset-password wiertmir
 ```
 
-It prints a one-time password for that username and exits; it does not start the server. Sign in
+It prints a one-time password for that username and exits; it does not start the server. Standard
+output carries only the password (one line); the explanation and any log lines go to standard error. Sign in
 with it and choose a new password. It works whether the service is running or stopped. Like an
 admin's reset, it signs that user out everywhere and removes their app passwords (see the table
 below). An unknown username gives an error and a non-zero exit status. Anyone who can run it can
@@ -319,6 +320,7 @@ ports 8081 and 5080 free (`smoke-auth-web.sh` also 2525, 5081 and 8099; `browser
   | Action                          | Sessions            | Grants | App passwords | Linked sign-in methods                 |
   |---------------------------------|---------------------|--------|---------------|----------------------------------------|
   | Password reset (email, admin or `reset-password`) | all                 | all    | all           | removed if the email was never verified |
+  | Email verified through the mailed link | all                 | all    | all           | all removed (the password is kept)     |
   | Change password                 | all but the current | all    | all           | kept                                   |
   | Unlink a sign-in method         | all but the current | all    | kept          | the unlinked one is removed            |
   | Disable the account             | all                 | all    | all           | kept, unusable while disabled          |
@@ -333,6 +335,12 @@ ports 8081 and 5080 free (`smoke-auth-web.sh` also 2525, 5081 and 8099; `browser
   provider sign-in with the same address is refused ("an account with that email already exists")
   rather than attached to the account. An admin's reset of an account whose address is unverified
   also removes its linked sign-in methods.
+- Verifying an address through the mailed link removes every sign-in method linked before that
+  moment and signs the account out everywhere; a password reset on an account with an unverified
+  address does the same. Whatever was attached while the address was unproven may belong to someone
+  who registered another person's address. If you receive a verification mail for an account you
+  did not create and choose to confirm it, use "Forgot password" next: you do not know the password
+  that was set, and the reset replaces it.
 - Access tokens are valid for 15 minutes and are not checked against the database, so an app can
   keep using one for up to 15 minutes after any of the actions above.
 - A temporary password (seeded admin, admin-created user, admin reset) must be changed at the next

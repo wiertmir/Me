@@ -217,9 +217,9 @@ pub fn change_password(
     })
 }
 
-/// Whoever resets an account whose email was never proven reclaims it, so identities attached while it
-/// was unproven (e.g. a pre-hijacking sign-up with the victim's address) are removed. Call before the
-/// update; returns how many were removed.
+/// Whoever proves an address that was never proven (by a reset or by the verification link) reclaims the
+/// account, so identities attached while it was unproven (e.g. a pre-hijacking sign-up with the victim's
+/// address) are removed. Call before the update; returns how many were removed.
 fn purge_identities_if_unverified(tx: &rusqlite::Connection, id: &str) -> rusqlite::Result<usize> {
     tx.execute(
         "DELETE FROM identities WHERE user_id = ?1
@@ -253,13 +253,29 @@ pub fn complete_reset(db: &Db, id: Uuid, hash: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// The mailed link was followed: the address is now proven. Whatever was attached to the account or
+/// signed in to it before that moment may belong to someone who registered another person's address, so
+/// the step from unverified to verified removes every linked identity and revokes all sign-in state, in
+/// the same transaction as the update. An already verified account is left untouched.
 pub fn mark_verified(db: &Db, id: Uuid) -> ApiResult<()> {
-    db.with(|c| {
-        c.execute(
-            "UPDATE users SET email_verified = 1 WHERE id = ?1",
-            [id.to_string()],
-        )
+    let id = id.to_string();
+    let purged = db.with(|c| {
+        let tx = c.unchecked_transaction()?;
+        // Reads the flag, so it runs before the update.
+        let purged = purge_identities_if_unverified(&tx, &id)?;
+        let newly = tx.execute(
+            "UPDATE users SET email_verified = 1 WHERE id = ?1 AND email_verified = 0",
+            [&id],
+        )?;
+        if newly > 0 {
+            revoke_sign_in_state(&tx, &id, Keep::default())?;
+        }
+        tx.commit()?;
+        Ok(purged)
     })?;
+    if purged > 0 {
+        tracing::warn!(event = "identities_purged_on_verify", user_id = %id, count = purged);
+    }
     Ok(())
 }
 
