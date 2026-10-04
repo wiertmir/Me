@@ -33,6 +33,9 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // What the caller is told, so that a refusal can be explained from the log alone. Messages are
+        // written by the services and never repeat secrets or event texts.
+        tracing::warn!(status = self.status.as_u16(), code = self.code, message = %self.message, "request refused");
         let body = serde_json::json!({ "code": self.code, "message": self.message });
         (self.status, Json(body)).into_response()
     }

@@ -3,7 +3,7 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
 };
-use common::{ApiError, ErrorBody};
+use common::{ApiError, ApiJson, ErrorBody};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -14,7 +14,6 @@ use crate::{
     config::SignupMode,
     crypto,
     email_tokens::{self, Purpose},
-    extract::ApiJson,
     mail::Email,
     users::{self, NewUser, User},
 };

@@ -1,0 +1,19 @@
+# Development config. Copy to config.local.toml for real use; every value can be
+# overridden with ME_CALENDAR__<FIELD> (e.g. ME_CALENDAR__SERVICE_SECRET, ME_CALENDAR__LOG__LEVEL).
+listen = "127.0.0.1:8083"
+data_dir = "./data"
+# The auth-service that issues the access tokens this service accepts.
+issuer = "http://localhost:8081"
+# DEV ONLY: change this (via ME_CALENDAR__SERVICE_SECRET) for any real deployment. The service refuses to
+# start with this exact value when `listen` is not a loopback address, and warns about it otherwise.
+service_secret = "dev-only-service-secret-change-me"
+# Where to fetch the signing keys. Default: <issuer>/.well-known/jwks.json
+# jwks_url = "http://localhost:8081/.well-known/jwks.json"
+# The `aud` claim access tokens must carry; same value as auth-service. Default: "me-api".
+# audience = "me-api"
+
+[log]
+format = "pretty"        # "pretty" | "json"
+level = "debug"
+# Also write the log to <dir>/<service>-YYYYMMDD.log, a new file each day; the newest 31 are kept.
+# dir = "./logs"

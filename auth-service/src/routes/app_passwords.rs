@@ -4,7 +4,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use chrono::{DateTime, Utc};
-use common::{ApiError, ErrorBody};
+use common::{ApiError, ApiJson, ErrorBody, PathId};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use utoipa::ToSchema;
@@ -16,7 +16,6 @@ use crate::{
     AppState,
     app_password_store::{self as store, AppPasswordInfo},
     crypto,
-    extract::{ApiJson, PathId},
     sessions::SessionUser,
     users,
 };

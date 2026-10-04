@@ -96,6 +96,12 @@ impl TokenVerifier {
         self
     }
 
+    /// Overrides the keys URL (default `<issuer>/.well-known/jwks.json`), e.g. for an in-cluster address.
+    pub fn with_jwks_url(mut self, url: impl Into<String>) -> Self {
+        self.jwks_url = url.into();
+        self
+    }
+
     pub async fn verify(&self, token: &str) -> Result<Claims, ApiError> {
         let fail = |reason: &str| {
             tracing::debug!(reason, "access token rejected");

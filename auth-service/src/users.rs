@@ -411,7 +411,7 @@ mod tests {
     /// Adding a table without deciding whether a reset must clear it fails here.
     #[test]
     fn every_table_is_revoked_or_deliberately_kept() {
-        let db = Db::open_in_memory().unwrap();
+        let db = crate::db::open_in_memory().unwrap();
         let tables: Vec<String> = db
             .with(|c| {
                 c.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?
@@ -436,7 +436,7 @@ mod tests {
     /// The list is not only complete, it works: one row per table for a user, then keep-nothing.
     #[test]
     fn keep_nothing_empties_every_listed_table_and_keep_spares_what_it_names() {
-        let db = Db::open_in_memory().unwrap();
+        let db = crate::db::open_in_memory().unwrap();
         let user = |name: &str| {
             let new = NewUser {
                 username: name.into(),

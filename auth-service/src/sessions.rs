@@ -5,10 +5,9 @@ use axum::{
     response::Response,
 };
 use chrono::{DateTime, Utc};
-use common::{ApiError, ApiResult};
+use common::{ApiError, ApiResult, secret::secret_ok};
 use rusqlite::params;
 use serde::Serialize;
-use subtle::ConstantTimeEq;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -126,13 +125,6 @@ fn lookup(db: &Db, token: &str) -> ApiResult<Option<(Uuid, Uuid)>> {
         Ok(found)
     })?;
     Ok(found.and_then(|(s, u)| Some((Uuid::parse_str(&s).ok()?, Uuid::parse_str(&u).ok()?))))
-}
-
-fn secret_ok(headers: &HeaderMap, expected: &str) -> bool {
-    // An absent header must never match, even against an (invalid) empty secret.
-    headers
-        .get("x-service-secret")
-        .is_some_and(|v| v.as_bytes().ct_eq(expected.as_bytes()).into())
 }
 
 /// Rejects every `/api/*` request lacking the service secret, except the public API docs.

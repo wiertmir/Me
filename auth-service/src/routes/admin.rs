@@ -1,5 +1,5 @@
 use axum::{Json, extract::State, http::StatusCode};
-use common::{ApiError, ErrorBody};
+use common::{ApiError, ApiJson, ErrorBody, PathId};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -7,7 +7,6 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use super::signup::{valid_email, valid_username, validation};
 use crate::{
     AppState, crypto,
-    extract::{ApiJson, PathId},
     sessions::AdminUser,
     users::{self, FlagsOutcome, NewUser, User},
 };

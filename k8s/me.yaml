@@ -1,12 +1,12 @@
-# auth-service, auth-web and Caddy as one pod. The containers share a network namespace, so they
-# reach each other on loopback exactly as the plain processes do: both services stay on 127.0.0.1 and
+# auth-service, calendar-service, auth-web and Caddy as one pod. The containers share a network namespace, so they
+# reach each other on loopback exactly as the plain processes do: the services stay on 127.0.0.1 and
 # auth-web keeps trusting the proxy's forwarded headers. Only Caddy's 80/443 leave the pod, plus the
-# Aspire dashboard (traces of both services), which the cluster publishes on this machine's loopback only.
+# Aspire dashboard (traces of the services), which the cluster publishes on this machine's loopback only.
 #
 # Created by run-kubernetes.sh, which also supplies:
 #   secret me-env        the repository's .env (service secret, host name, auth-web settings) plus TZ
 #                        and OTLP_KEY, a key for the dashboard that is new on every run
-#   configmap me-config  auth-service/config.local.toml and the Caddyfile
+#   configmap me-config  auth-service/ and calendar-service/config.local.toml and the Caddyfile
 #   /me/* on the node    the same data directories the plain processes use
 apiVersion: v1
 kind: Namespace
@@ -45,6 +45,17 @@ spec:
             - {name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-otlp-api-key=$(OTLP_KEY)"}   # OTLP_KEY: from me-env
           volumeMounts:
             - {name: config, mountPath: /etc/me/config.toml, subPath: config.toml}
+            - {name: auth-data, mountPath: /data}
+        - name: calendar-service
+          image: me/calendar-service:dev
+          args: ["/etc/me/calendar.toml"]
+          envFrom: [{secretRef: {name: me-env}}]
+          env:
+            - {name: ME_CALENDAR__DATA_DIR, value: /data}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://127.0.0.1:18889"}
+            - {name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-otlp-api-key=$(OTLP_KEY)"}   # OTLP_KEY: from me-env
+          volumeMounts:
+            - {name: config, mountPath: /etc/me/calendar.toml, subPath: calendar.toml}
             - {name: auth-data, mountPath: /data}
         - name: auth-web
           image: me/auth-web:dev

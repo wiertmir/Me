@@ -1,6 +1,6 @@
-// .NET Aspire app host: runs the home-network setup (the three N-run-*.sh scripts) as resources of one
+// .NET Aspire app host: runs the home-network setup (the N-run-*.sh scripts) as resources of one
 // dashboard, with their state, console logs, traces and start/stop:   dotnet run --project apphost
-// Same .env, same auth-service/config.local.toml, same Caddyfile and data directories as the scripts,
+// Same .env, same auth-service/ and calendar-service/config.local.toml, same Caddyfile and data directories as the scripts,
 // so stop those (and the Kubernetes cluster) first.
 var builder = DistributedApplication.CreateBuilder(args);
 var root = Path.GetFullPath(Path.Combine(builder.AppHostDirectory, ".."));
@@ -9,14 +9,25 @@ var env = File.ReadLines(Path.Combine(root, ".env"))
     .Where(l => !l.StartsWith('#') && l.Contains('='))
     .Select(l => l.Split('=', 2))
     .ToDictionary(p => p[0].Trim(), p => p[1].Trim());
+// Also log to ./logs, a file per day, as the run scripts do, unless .env names another directory.
+foreach (var name in new[] { "ME_AUTH__LOG__DIR", "ME_CALENDAR__LOG__DIR", "LOG_DIR" })
+    env.TryAdd(name, Path.Combine(root, "logs"));
 
-// Fixed ports and no Aspire proxy in front: the Caddyfile and both configurations name these addresses.
+// Fixed ports and no Aspire proxy in front: the Caddyfile and the configurations name these addresses.
 var authService = WithDotEnv(builder
     .AddExecutable("auth-service", "cargo", root,
         "run", "--release", "-p", "auth-service", "--", "auth-service/config.local.toml")
     .WithHttpEndpoint(port: 8081, targetPort: 8081, isProxied: false)
     .WithHttpHealthCheck("/health")
     .WithOtlpExporter());
+
+var calendarService = WithDotEnv(builder
+    .AddExecutable("calendar-service", "cargo", root,
+        "run", "--release", "-p", "calendar-service", "--", "calendar-service/config.local.toml")
+    .WithHttpEndpoint(port: 8083, targetPort: 8083, isProxied: false)
+    .WithHttpHealthCheck("/health")
+    .WithOtlpExporter()
+    .WaitFor(authService));
 
 // No launch profile: that one is the development setup; .env makes this Production on 127.0.0.1:5080.
 var authWeb = WithDotEnv(builder
@@ -29,7 +40,8 @@ WithDotEnv(builder
     .WithHttpsEndpoint(port: 443, targetPort: 443, isProxied: false)
     .WithUrlForEndpoint("https", u => u.Url = $"https://{env["ME_HOST"]}")
     .WaitFor(authWeb)
-    .WaitFor(authService));
+    .WaitFor(authService)
+    .WaitFor(calendarService));
 
 builder.Build().Run();
 

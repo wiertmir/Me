@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
-use common::{ApiError, ErrorBody};
+use common::{ApiError, ApiJson, ErrorBody};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -17,9 +17,7 @@ use super::client_info;
 use crate::{
     AppState,
     config::SignupMode,
-    crypto,
-    extract::ApiJson,
-    providers,
+    crypto, providers,
     sessions::{self, SessionUser},
     social_store,
     users::{self, NewUser, User},

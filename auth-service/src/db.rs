@@ -1,14 +1,6 @@
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::path::Path;
 
-use axum::http::StatusCode;
-use common::{ApiError, ApiResult};
-use rusqlite::Connection;
-
-#[derive(Clone)]
-pub struct Db(Arc<Mutex<Connection>>);
+pub use common::Db;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS users (
@@ -118,35 +110,12 @@ CREATE TABLE IF NOT EXISTS social_tickets (
 );
 ";
 
-impl Db {
-    pub fn open(path: &Path) -> anyhow::Result<Db> {
-        Self::init(Connection::open(path)?)
-    }
+pub fn open(path: &Path) -> anyhow::Result<Db> {
+    Db::open(path, SCHEMA)
+}
 
-    pub fn open_in_memory() -> anyhow::Result<Db> {
-        Self::init(Connection::open_in_memory()?)
-    }
-
-    fn init(conn: Connection) -> anyhow::Result<Db> {
-        // journal_mode returns a row, so query it rather than execute it.
-        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        conn.execute_batch(SCHEMA)?;
-        Ok(Db(Arc::new(Mutex::new(conn))))
-    }
-
-    // ponytail: single connection, switch to a pool if lock contention shows up
-    pub fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> ApiResult<T> {
-        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        f(&conn).map_err(|e| {
-            tracing::error!(error = %e, "database error");
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "internal error",
-            )
-        })
-    }
+pub fn open_in_memory() -> anyhow::Result<Db> {
+    Db::open_in_memory(SCHEMA)
 }
 
 #[cfg(test)]
@@ -155,7 +124,7 @@ mod tests {
 
     #[test]
     fn schema_has_all_tables_and_foreign_keys() {
-        let db = Db::open_in_memory().unwrap();
+        let db = open_in_memory().unwrap();
         let n: i64 = db
             .with(|c| {
                 c.query_row(

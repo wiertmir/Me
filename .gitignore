@@ -8,4 +8,6 @@ config.local.toml
 .env
 .superpowers/
 data/
+logs/*
+!logs/.gitkeep
 node_modules/
