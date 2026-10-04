@@ -5,7 +5,7 @@ use axum::{
     extract::{Query, State, rejection::QueryRejection},
     http::StatusCode,
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Utc};
 use chrono_tz::Tz;
 use common::{ApiError, ApiResult, ErrorBody, PathId};
 use rusqlite::{Connection, params};
@@ -18,7 +18,7 @@ use crate::{
     AppState, Caller, calendars,
     events::{COLUMNS, Event, from_row, invalid},
     recur,
-    time::{When, parse_tz, parse_when},
+    time::{When, YEARS, parse_tz, parse_when},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -319,16 +319,17 @@ fn parse_range(
     let instant = |v: Option<String>, name: &'static str| {
         v.and_then(|v| DateTime::parse_from_rfc3339(&v).ok())
             .map(|t| t.to_utc())
+            .filter(|t| YEARS.contains(&t.year()))
             .ok_or_else(|| invalid(name))
     };
     let (from, to) = (
         instant(
             q.from,
-            "from is required, RFC 3339 with an offset (send + as %2B)",
+            "from is required, RFC 3339 with an offset (send + as %2B), in the years 1900 to 2200",
         )?,
         instant(
             q.to,
-            "to is required, RFC 3339 with an offset (send + as %2B)",
+            "to is required, RFC 3339 with an offset (send + as %2B), in the years 1900 to 2200",
         )?,
     );
     if to <= from || to - from > Duration::days(MAX_RANGE_DAYS) {
@@ -347,7 +348,7 @@ fn parse_range(
     tag = "events",
     params(
         ("id" = String, Path, description = "the calendar's UUID"),
-        ("from" = String, Query, description = "RFC 3339 with an offset; `+` must be sent as `%2B`"),
+        ("from" = String, Query, description = "RFC 3339 with an offset, in the years 1900 to 2200; `+` must be sent as `%2B`"),
         ("to" = String, Query, description = "RFC 3339 with an offset, after `from`, at most 366 days later"),
         ("tz" = Option<String>, Query, description = "IANA zone for all-day events; default `UTC`"),
         ("X-User-Id" = Option<Uuid>, Header, description = "The user to act for; required with `X-Service-Secret`"),
@@ -375,5 +376,18 @@ async fn list_occurrences(
             candidates(c, user, calendar, from.timestamp(), to.timestamp()).map(Some)
         })?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such calendar"))?;
-    Ok(Json(occurrences_in(rows, tz, from, to)?))
+    // Expansion is CPU work whose size the caller sets (see `recur::starts`): off the async workers.
+    let span = tracing::Span::current();
+    let found =
+        tokio::task::spawn_blocking(move || span.in_scope(|| occurrences_in(rows, tz, from, to)))
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "range expansion task failed");
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal error",
+                )
+            })??;
+    Ok(Json(found))
 }

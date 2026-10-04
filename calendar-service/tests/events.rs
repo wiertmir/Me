@@ -462,3 +462,128 @@ async fn override_rules_on_write() {
         );
     }
 }
+
+#[tokio::test]
+async fn series_occurrence_longer_than_366_days_is_refused() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    let long = json!({"all_day": true, "start": "2026-01-01", "end": "2027-01-03"});
+    let (s, e) = post(
+        &app,
+        ALICE,
+        &cal,
+        with(long.clone(), json!({"rrule": "FREQ=YEARLY"})),
+    )
+    .await;
+    assert_eq!((s, &e["code"]), (422, &json!("validation")), "{e}");
+    let (s, e) = post(
+        &app,
+        ALICE,
+        &cal,
+        with(
+            json!({"all_day": true, "start": "2026-01-01", "end": "2027-01-02"}),
+            json!({"rrule": "FREQ=YEARLY"}),
+        ),
+    )
+    .await;
+    assert_eq!(s, 201, "{e}");
+    let (s, e) = post(&app, ALICE, &cal, long).await;
+    assert_eq!(s, 201, "{e}");
+}
+
+#[tokio::test]
+async fn far_dates_are_refused_not_panics() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    for body in [
+        with(
+            timed(),
+            json!({"start": "+262142-12-31T22:00:00", "end": "+262142-12-31T23:00:00", "tz": "Pacific/Pago_Pago"}),
+        ),
+        json!({"all_day": true, "start": "0000-01-01", "end": "9999-12-31"}),
+        json!({"all_day": true, "start": "-262143-01-01", "end": "+262142-12-31", "rrule": "FREQ=DAILY"}),
+    ] {
+        let (s, e) = post(&app, ALICE, &cal, body.clone()).await;
+        assert_eq!((s, &e["code"]), (422, &json!("validation")), "{body}");
+    }
+}
+
+/// Puts `n` live events straight into the database, each a series when `rrule` is given.
+fn fill(app: &TestApp, cal: &str, n: usize, rrule: Option<&str>) {
+    let mut db = app.db();
+    let tx = db.transaction().unwrap();
+    {
+        let mut ins = tx
+            .prepare(
+                "INSERT INTO events (id, calendar_id, uid, summary, description, location, all_day, start, \"end\",
+                    tz, rrule, exdates, reminders, revision, start_utc, end_utc, created_at, updated_at)
+                 VALUES (?1, ?2, ?1, '', '', '', 0, '2026-10-05T09:00:00', '2026-10-05T10:00:00', 'UTC', ?3,
+                    '[]', '[]', 0, 1791190800, ?4, 0, 0)",
+            )
+            .unwrap();
+        for _ in 0..n {
+            let end_utc = rrule.is_none().then_some(1791194400);
+            ins.execute(rusqlite::params![
+                Uuid::new_v4().to_string(),
+                cal,
+                rrule,
+                end_utc
+            ])
+            .unwrap();
+        }
+    }
+    tx.commit().unwrap();
+}
+
+#[tokio::test]
+async fn series_cap_per_calendar() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    fill(&app, &cal, 1000, Some("FREQ=YEARLY"));
+    let series = with(timed(), json!({"rrule": "FREQ=WEEKLY"}));
+    let (s, e) = post(&app, ALICE, &cal, series.clone()).await;
+    assert_eq!((s, &e["code"]), (409, &json!("conflict")), "{e}");
+    let (s, single) = post(&app, ALICE, &cal, timed()).await;
+    assert_eq!(s, 201, "{single}");
+    // nor does a single event become the series over the cap
+    let (s, _, e) = app
+        .call(Method::PUT, &path(&single), ALICE, Some(series))
+        .await;
+    assert_eq!((s.as_u16(), &e["code"]), (409, &json!("conflict")), "{e}");
+    let (s, _, e) = app
+        .call(Method::PUT, &path(&single), ALICE, Some(timed()))
+        .await;
+    assert_eq!(s, 200, "{e}");
+}
+
+#[tokio::test]
+async fn event_cap_per_calendar() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    fill(&app, &cal, 9_999, None);
+    let (s, e) = post(&app, ALICE, &cal, timed()).await;
+    assert_eq!(s, 201, "{e}");
+    let (s, e) = post(&app, ALICE, &cal, timed()).await;
+    assert_eq!((s, &e["code"]), (409, &json!("conflict")), "{e}");
+}
+
+#[tokio::test]
+async fn series_ending_before_its_start_on_the_wall_clock_is_refused() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    // 02:30 does not exist that night and maps to 03:30, after 03:10: in order as instants only
+    let body = with(
+        timed(),
+        json!({"start": "2027-03-28T03:10:00", "end": "2027-03-28T02:30:00"}),
+    );
+    let (s, e) = post(
+        &app,
+        ALICE,
+        &cal,
+        with(body.clone(), json!({"rrule": "FREQ=DAILY"})),
+    )
+    .await;
+    assert_eq!((s, &e["code"]), (422, &json!("validation")), "{e}");
+    let (s, e) = post(&app, ALICE, &cal, body).await;
+    assert_eq!(s, 201, "{e}");
+}

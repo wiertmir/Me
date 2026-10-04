@@ -99,9 +99,12 @@ pub fn starts(
     let set = build(rrule, start, tz)?
         .after((wall(from) - duration - pad).with_timezone(&rrule::Tz::UTC))
         .before((wall(to) + pad).with_timezone(&rrule::Tz::UTC));
-    // ponytail: the crate walks every occurrence from the series start on each query (linear in the series'
-    // age; BYHOUR/BYMINUTE/BYSECOND are refused so that is at most one per day) and stops at 65535
-    // results or 100000 candidate days. Cache expansions or jump the start forward if old series get slow.
+    // ponytail: the crate walks every occurrence from the series start on each query, so the cost is linear
+    // in the series' age, and the caller picks that age. It is bounded by the 1900 floor on years (`time::YEARS`;
+    // BYHOUR/BYMINUTE/BYSECOND are refused, so at most one occurrence per day) times the series cap per
+    // calendar (`events::MAX_SERIES_PER_CALENDAR`), and the crate stops at 65535 results or 100000 candidate
+    // days. If range queries get slow: jump the start forward to the last occurrence before the window (exact
+    // for rules without COUNT), or cache expansions per series revision.
     let found = set.all(CRATE_MAX as u16);
     if found.limited {
         return Err(too_many(limit));

@@ -3,7 +3,7 @@ use axum::{
     extract::{Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode, header},
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use common::{ApiError, ApiJson, ApiResult, ErrorBody, PathId};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,12 @@ use crate::{
 
 pub(crate) const COLUMNS: &str = "id, calendar_id, uid, summary, description, location, all_day, start, \"end\", tz, \
     rrule, exdates, reminders, recurring_event_id, original_start, revision, created_at, updated_at";
+
+/// Live (not deleted) events one calendar holds, and how many of them may be series. With the floor on
+/// years they bound what one range query can cost: see the `// ponytail:` note in `recur::starts`.
+pub const MAX_EVENTS_PER_CALENDAR: i64 = 10_000;
+pub const MAX_SERIES_PER_CALENDAR: i64 = 1_000;
+const MAX_SERIES_OCCURRENCE_DAYS: i64 = 366;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -43,9 +49,11 @@ pub struct EventInput {
     #[serde(default)]
     location: String,
     all_day: bool,
-    /// `YYYY-MM-DD` for an all-day event, `YYYY-MM-DDTHH:MM:SS` (wall-clock time in `tz`) otherwise.
+    /// `YYYY-MM-DD` for an all-day event, `YYYY-MM-DDTHH:MM:SS` (wall-clock time in `tz`) otherwise;
+    /// years 1900 to 2200.
     start: String,
-    /// Same form as `start`; exclusive for an all-day event, and after `start` as an instant.
+    /// Same form as `start`; exclusive for an all-day event, and after `start` as an instant. With an
+    /// `rrule`, at most 366 days after `start`.
     end: String,
     /// IANA zone name; required for a timed event, forbidden for an all-day one.
     #[serde(default)]
@@ -207,6 +215,18 @@ fn check(inp: &EventInput) -> ApiResult<Checked> {
         if r.chars().count() > 500 {
             return Err(invalid("rrule is at most 500 characters"));
         }
+        if end.instant(zone) - start.instant(zone) > Duration::days(MAX_SERIES_OCCURRENCE_DAYS) {
+            return Err(invalid(
+                "one occurrence of a repeating event is at most 366 days long",
+            ));
+        }
+        // Every occurrence gets the series' wall-clock length, which around a DST change can be zero or
+        // less where the instants are in order.
+        if end <= start {
+            return Err(invalid(
+                "a repeating event's end must be after its start on the wall clock too",
+            ));
+        }
         recur::validate(r, start, zone)?;
     }
     match (&inp.recurring_event_id, &inp.original_start) {
@@ -280,6 +300,22 @@ fn bump(c: &Connection, user: Uuid, calendar: Uuid) -> rusqlite::Result<i64> {
     )
 }
 
+/// How many live events `calendar` holds, and how many of them are series.
+// ponytail: counted on every create, over all the calendar's rows (tombstones too); keep the two counts on
+// the calendar row if writes get slow
+fn counts(c: &Connection, user: Uuid, calendar: Uuid) -> rusqlite::Result<(i64, i64)> {
+    c.query_row(
+        "SELECT COUNT(*), COUNT(rrule) FROM events WHERE calendar_id = ?1 AND deleted = 0
+         AND calendar_id IN (SELECT id FROM calendars WHERE user_id = ?2)",
+        params![calendar.to_string(), user.to_string()],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+}
+
+fn series_cap() -> ApiError {
+    conflict("this calendar already holds 1,000 repeating events")
+}
+
 fn exists(c: &Connection, sql: &str, p: impl rusqlite::Params) -> rusqlite::Result<bool> {
     c.query_row(&format!("SELECT EXISTS({sql})"), p, |r| r.get(0))
 }
@@ -325,7 +361,7 @@ const ID_PARAMS: &str = "UUID";
     (status = 201, description = "created; `ETag` header carries the etag", body = Event),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
-    (status = 409, description = "`conflict`: the uid is in use, or the occurrence already has an override", body = ErrorBody),
+    (status = 409, description = "`conflict`: the uid is in use, the occurrence already has an override, or the calendar already holds 10,000 events or 1,000 repeating ones", body = ErrorBody),
     (status = 422, description = "`validation`: malformed body, a limit exceeded, bad times or zone, bad rrule, or bad override", body = ErrorBody),
 )
 )]
@@ -339,6 +375,13 @@ async fn create_event(
     let ev = atomically(&s, |c| {
         calendars::owned(c, user, calendar)?
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such calendar"))?;
+        let (events, series) = counts(c, user, calendar)?;
+        if events >= MAX_EVENTS_PER_CALENDAR {
+            return Err(conflict("this calendar already holds 10,000 events").into());
+        }
+        if inp.rrule.is_some() && series >= MAX_SERIES_PER_CALENDAR {
+            return Err(series_cap().into());
+        }
         let id = Uuid::new_v4();
         let cal = calendar.to_string();
         let uid = match inp.recurring_event_id {
@@ -448,6 +491,7 @@ async fn get_event(
     (status = 200, description = "the replaced event; `ETag` header carries the new etag", body = Event),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, deleted, or not the caller's", body = ErrorBody),
+    (status = 409, description = "`conflict`: the event would become a repeating one and the calendar already holds 1,000", body = ErrorBody),
     (status = 412, description = "`etag_mismatch`: `If-Match` is not the current etag", body = ErrorBody),
     (status = 422, description = "`validation`: as for create, or an immutable field differs", body = ErrorBody),
 )
@@ -480,6 +524,12 @@ async fn replace_event(
         }
         if is_override && inp.all_day != old.all_day {
             return Err(invalid("an override keeps its series' all_day").into());
+        }
+        if old.rrule.is_none()
+            && inp.rrule.is_some()
+            && counts(c, user, old.calendar_id)?.1 >= MAX_SERIES_PER_CALENDAR
+        {
+            return Err(series_cap().into());
         }
         let revision = bump(c, user, old.calendar_id)?;
         c.execute(
@@ -552,6 +602,8 @@ async fn delete_event(
 /// The stored events of `calendar` with `revision > since` (tombstones included), or the live ones without
 /// `since`, by revision then id; with the calendar's token, read together.
 // ponytail: tombstones are kept forever; prune by age once a database grows
+// ponytail: the answer is unpaginated and built under the database lock (at most 10,000 live events, plus
+// every tombstone); add a `limit` and a `next` token to the feed if one answer gets large or holds the lock long
 fn changes_since(
     c: &Connection,
     user: Uuid,

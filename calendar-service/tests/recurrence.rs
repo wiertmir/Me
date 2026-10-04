@@ -512,3 +512,26 @@ async fn unparsable_stored_rule_does_not_fail_the_query() {
     assert_eq!(got.len(), 1);
     assert_eq!(got[0]["id"], single["id"]);
 }
+
+#[tokio::test]
+async fn far_range_is_refused() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app).await;
+    for (from, to) in [
+        ("0001-01-01T00:00:00Z", "0001-01-08T00:00:00Z"),
+        ("1899-12-31T23:00:00Z", "1900-01-02T00:00:00Z"),
+        ("2200-12-31T00:00:00Z", "2201-01-01T00:00:01Z"),
+    ] {
+        let (s, e) = range(&app, &cal, from, to, "UTC").await;
+        assert_eq!((s, &e["code"]), (422, &json!("validation")), "{from}");
+    }
+    let (s, e) = range(
+        &app,
+        &cal,
+        "1900-01-01T00:00:00Z",
+        "1900-01-08T00:00:00Z",
+        "UTC",
+    )
+    .await;
+    assert_eq!(s, 200, "{e}");
+}

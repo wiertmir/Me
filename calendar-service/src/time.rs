@@ -2,13 +2,19 @@ use std::fmt;
 
 use axum::http::StatusCode;
 use chrono::{
-    DateTime, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Utc,
+    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, Offset,
+    TimeZone, Utc,
 };
 use chrono_tz::Tz;
 use common::{ApiError, ApiResult};
 
 const DATE: &str = "%Y-%m-%d";
 const DATE_TIME: &str = "%Y-%m-%dT%H:%M:%S";
+
+/// The years a client may name, in events and in range queries. Far inside chrono's own range, so adding a
+/// zone offset, an occurrence's length or a query's padding to an accepted time cannot overflow; the floor
+/// also bounds how many occurrences an old series has behind it.
+pub const YEARS: std::ops::RangeInclusive<i32> = 1900..=2200;
 
 /// An event boundary: a calendar day for all-day events, a wall-clock time otherwise.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -21,7 +27,8 @@ fn invalid(message: String) -> ApiError {
     ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "validation", message)
 }
 
-/// Exact forms only (it must print back as given): `%Y-%m-%d` when `all_day`, `%Y-%m-%dT%H:%M:%S` otherwise.
+/// Exact forms only (it must print back as given): `%Y-%m-%d` when `all_day`, `%Y-%m-%dT%H:%M:%S` otherwise,
+/// in the years 1900 to 2200.
 pub fn parse_when(s: &str, all_day: bool) -> ApiResult<When> {
     let parsed = if all_day {
         NaiveDate::parse_from_str(s, DATE).map(When::Date)
@@ -29,14 +36,23 @@ pub fn parse_when(s: &str, all_day: bool) -> ApiResult<When> {
         NaiveDateTime::parse_from_str(s, DATE_TIME).map(When::Timed)
     };
     // chrono also takes `9:00:00`, a leading space or `+`; only the canonical spelling is one value per instant.
-    parsed.ok().filter(|w| w.to_string() == s).ok_or_else(|| {
-        let form = if all_day {
-            "YYYY-MM-DD"
-        } else {
-            "YYYY-MM-DDTHH:MM:SS"
-        };
-        invalid(format!("{s:?} is not a valid {form} value"))
-    })
+    let year = |w: &When| match w {
+        When::Date(d) => d.year(),
+        When::Timed(t) => t.year(),
+    };
+    parsed
+        .ok()
+        .filter(|w| w.to_string() == s && YEARS.contains(&year(w)))
+        .ok_or_else(|| {
+            let form = if all_day {
+                "YYYY-MM-DD"
+            } else {
+                "YYYY-MM-DDTHH:MM:SS"
+            };
+            invalid(format!(
+                "{s:?} is not a valid {form} value in the years 1900 to 2200"
+            ))
+        })
 }
 
 impl fmt::Display for When {
@@ -118,6 +134,24 @@ mod tests {
             ("2026-10-5", true),
         ] {
             assert!(parse_when(s, all_day).is_err(), "{s} {all_day}");
+        }
+    }
+
+    #[test]
+    fn years_outside_1900_2200_are_refused() {
+        for s in [
+            "1899-12-31",
+            "2201-01-01",
+            "+10000-01-01",
+            "-262143-01-01",
+            "0000-01-01",
+        ] {
+            assert!(parse_when(s, true).is_err(), "{s}");
+            assert!(parse_when(&format!("{s}T00:00:00"), false).is_err(), "{s}");
+        }
+        for s in ["1900-01-01", "2200-12-31"] {
+            assert!(parse_when(s, true).is_ok(), "{s}");
+            assert!(parse_when(&format!("{s}T00:00:00"), false).is_ok(), "{s}");
         }
     }
 
