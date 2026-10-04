@@ -1,3 +1,4 @@
+pub mod calendars;
 pub mod caller;
 pub mod config;
 pub mod db;
@@ -66,23 +67,6 @@ async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
 }
 
-/// List the user's calendars
-///
-/// Placeholder until calendars exist: always empty.
-#[utoipa::path(
-    get, path = "/calendar/v1/calendars",
-    tag = "calendars",
-    params(("X-User-Id" = Option<uuid::Uuid>, Header, description = "The user to act for; required with `X-Service-Secret`")),
-    security(("service_secret" = []), ("access_token" = [])),
-    responses(
-    (status = 200, description = "the calendars", body = Vec<String>),
-    (status = 401, description = "`unauthorized`: no valid credentials", body = common::ErrorBody),
-)
-)]
-async fn list_calendars(_caller: Caller) -> Json<Vec<String>> {
-    Json(vec![])
-}
-
 async fn not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such route")
 }
@@ -98,7 +82,7 @@ async fn method_not_allowed() -> impl IntoResponse {
 pub fn app(state: AppState) -> Router {
     let (router, api) = OpenApiRouter::with_openapi(openapi::ApiDoc::openapi())
         .routes(routes!(health))
-        .routes(routes!(list_calendars))
+        .merge(calendars::router())
         .split_for_parts();
     router
         .method_not_allowed_fallback(method_not_allowed)

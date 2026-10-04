@@ -29,7 +29,7 @@ async fn no_credentials_is_401() {
 async fn bearer_token_is_accepted() {
     let app = TestApp::spawn().await;
     let (s, _, b) = app.call(Method::GET, LIST, ALICE, None).await;
-    assert_eq!((s.as_u16(), b), (200, json!([])));
+    assert_eq!((s.as_u16(), &b[0]["name"]), (200, &json!("Personal")));
 }
 
 #[tokio::test]
@@ -52,7 +52,7 @@ async fn service_secret_with_user_id() {
             .header("X-User-Id", ALICE.to_string()),
     )
     .await;
-    assert_eq!((s, b), (200, json!([])));
+    assert_eq!((s, &b[0]["name"]), (200, &json!("Personal")));
 }
 
 #[tokio::test]
