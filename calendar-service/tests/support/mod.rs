@@ -92,6 +92,11 @@ impl TestApp {
         }
     }
 
+    /// A direct connection to the service's database, for corrupting rows a test needs unreadable.
+    pub fn db(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(self._dir.path().join("calendar.db")).unwrap()
+    }
+
     pub fn token(&self, user: Uuid) -> String {
         self.key.token(&self.issuer, user, 300)
     }

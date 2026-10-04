@@ -391,3 +391,124 @@ async fn isolation() {
         .await;
     assert_eq!(s, 404);
 }
+
+#[tokio::test]
+async fn override_before_its_series_start_is_visible() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app).await;
+    let series = post(&app, &cal, weekly()).await;
+    let body = with(
+        timed("2026-10-12T09:00:00", "2026-10-12T10:00:00"),
+        json!({"recurring_event_id": series["id"], "original_start": "2026-10-19T09:00:00",
+               "uid": series["uid"]}),
+    );
+    let ov = post(&app, &cal, body).await;
+    let got = occurrences(&app, &cal, "2026-10-10T00:00:00Z", "2026-10-15T00:00:00Z").await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0]["id"], ov["id"]);
+}
+
+#[tokio::test]
+async fn all_day_series_around_dst_in_query_tz() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app).await;
+    let daily = |start: &str, end: &str| with(all_day(start, end), json!({"rrule": "FREQ=DAILY"}));
+    post(&app, &cal, daily("2027-03-25", "2027-03-26")).await;
+    let (s, b) = range(
+        &app,
+        &cal,
+        "2027-03-28T22:00:00Z",
+        "2027-03-29T22:00:00Z",
+        "Europe/Warsaw",
+    )
+    .await;
+    assert_eq!(s, 200);
+    let starts: Vec<_> = b
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["start"].clone())
+        .collect();
+    assert_eq!(starts, [json!("2027-03-29")]);
+
+    let app = TestApp::spawn().await;
+    let cal = self::cal(&app).await;
+    post(&app, &cal, daily("2026-10-20", "2026-10-21")).await;
+    let (s, b) = range(
+        &app,
+        &cal,
+        "2026-10-25T22:30:00Z",
+        "2026-10-25T22:45:00Z",
+        "Europe/Warsaw",
+    )
+    .await;
+    assert_eq!(s, 200);
+    let starts: Vec<_> = b
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["start"].clone())
+        .collect();
+    assert_eq!(starts, [json!("2026-10-25")]);
+}
+
+#[tokio::test]
+async fn cap_counts_the_answer() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app).await;
+    // 2026-01-01T00:00Z..2027-01-02T00:00Z holds a daily 08:00 Warsaw series from 2026-01-01 on
+    // 366 days (2026-01-01 ..= 2027-01-01): 13 x 366 = 4758, plus COUNT=242 makes exactly 5000.
+    let series = |rule: &str| {
+        with(
+            timed("2026-01-01T08:00:00", "2026-01-01T09:00:00"),
+            json!({"rrule": rule}),
+        )
+    };
+    for _ in 0..13 {
+        post(&app, &cal, series("FREQ=DAILY")).await;
+    }
+    let last = post(&app, &cal, series("FREQ=DAILY;COUNT=242")).await;
+    let (from, to) = ("2026-01-01T00:00:00Z", "2027-01-02T00:00:00Z");
+    let n = |b: &Value| b.as_array().unwrap().len();
+    let (s, b) = range(&app, &cal, from, to, "UTC").await;
+    assert_eq!((s, n(&b)), (200, 5000));
+    let body = with(
+        timed("2026-06-10T09:00:00", "2026-06-10T10:00:00"),
+        json!({"recurring_event_id": last["id"], "original_start": "2026-01-10T08:00:00",
+               "uid": last["uid"]}),
+    );
+    post(&app, &cal, body).await;
+    let (s, b) = range(&app, &cal, from, to, "UTC").await;
+    assert_eq!((s, n(&b)), (200, 5000));
+    post(
+        &app,
+        &cal,
+        timed("2026-03-01T08:00:00", "2026-03-01T09:00:00"),
+    )
+    .await;
+    let (s, b) = range(&app, &cal, from, to, "UTC").await;
+    assert_eq!((s, b["code"].as_str()), (422, Some("too_many_occurrences")));
+    assert!(b["message"].as_str().unwrap().contains("5000"), "{b}");
+}
+
+#[tokio::test]
+async fn unparsable_stored_rule_does_not_fail_the_query() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app).await;
+    post(&app, &cal, weekly()).await;
+    let single = post(
+        &app,
+        &cal,
+        timed("2026-10-05T09:00:00", "2026-10-05T10:00:00"),
+    )
+    .await;
+    app.db()
+        .execute(
+            "UPDATE events SET rrule = 'garbage' WHERE rrule IS NOT NULL",
+            [],
+        )
+        .unwrap();
+    let got = occurrences(&app, &cal, OCT.0, OCT.1).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0]["id"], single["id"]);
+}

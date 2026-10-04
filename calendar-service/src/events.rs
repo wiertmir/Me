@@ -574,16 +574,19 @@ impl Parts {
     }
 }
 
-fn exdates_of(ev: &Event, all_day: bool) -> Vec<When> {
+/// Every exdate, or `None` when any no longer parses (the row is then skipped, not half-read).
+fn exdates_of(ev: &Event, all_day: bool) -> Option<Vec<When>> {
     ev.exdates
         .iter()
-        .filter_map(|x| parse_when(x, all_day).ok())
+        .map(|x| parse_when(x, all_day).ok())
         .collect()
 }
 
-/// Every row the query could need: the calendar's overrides (one moved out of the range still cancels
-/// its occurrence), series that began before the range ends, and singles overlapping it. The 14 hours
-/// cover all-day rows, whose stored instants assume UTC.
+/// Rows the query could need: every series, every override (one moved out of the range still cancels its
+/// occurrence, and one moved before its series' start must still find the series), and singles overlapping
+/// the range. The 14 hours cover all-day rows, whose stored instants assume UTC.
+// ponytail: all series and override rows of the calendar are loaded and parsed per query; filter series by a
+// stored last-occurrence instant and overrides by their original_start if one calendar gets thousands.
 fn candidates(
     c: &Connection,
     user: Uuid,
@@ -595,8 +598,7 @@ fn candidates(
     c.prepare(&format!(
         "SELECT {COLUMNS} FROM events WHERE calendar_id = ?1 AND deleted = 0
          AND calendar_id IN (SELECT id FROM calendars WHERE user_id = ?2)
-         AND (recurring_event_id IS NOT NULL
-              OR (rrule IS NOT NULL AND start_utc < ?3)
+         AND (recurring_event_id IS NOT NULL OR rrule IS NOT NULL
               OR (start_utc < ?3 AND end_utc > ?4))"
     ))?
     .query_map(
@@ -608,11 +610,9 @@ fn candidates(
 
 fn occurrence(
     ev: &Event,
-    start: &str,
-    end: &str,
+    (start, end): (&str, &str),
     original: Option<String>,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    (start_utc, end_utc): (DateTime<Utc>, DateTime<Utc>),
 ) -> Occurrence {
     let mut event = ev.clone();
     event.start = start.into();
@@ -620,64 +620,127 @@ fn occurrence(
     event.original_start = original;
     Occurrence {
         event,
-        start_utc: from,
-        end_utc: to,
+        start_utc,
+        end_utc,
     }
 }
 
-/// The occurrences of `series` in [from, to) whose start no effective override replaces.
-fn expand(
-    series: &Event,
-    replaced: &HashSet<(Uuid, String)>,
-    qtz: Tz,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
-    limit: usize,
-) -> ApiResult<Vec<Occurrence>> {
-    let (Some(rrule), Some(p)) = (&series.rrule, Parts::of(series)) else {
-        return Ok(vec![]);
-    };
-    let zone = p.zone(qtz);
-    // A timed occurrence is as long as the series' own first one; an all-day one spans whole days.
-    let duration = match (p.start, p.end) {
-        (When::Date(a), When::Date(b)) => Duration::days((b - a).num_days()),
-        _ => p.end.instant(zone) - p.start.instant(zone),
-    };
-    let starts = recur::starts(
-        rrule,
-        p.start,
-        duration,
-        &exdates_of(series, p.all_day),
-        zone,
-        from,
-        to,
-        limit,
-    )?;
-    Ok(starts
-        .into_iter()
-        .filter(|s| !replaced.contains(&(series.id, s.to_string())))
-        .map(|s| {
-            let start_utc = s.instant(zone);
-            let (end, end_utc) = match s {
-                When::Date(d) => {
-                    let e = When::Date(d + duration);
-                    (e, e.instant(zone))
+fn too_many() -> ApiError {
+    ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "too_many_occurrences",
+        format!("more than {MAX_OCCURRENCES} occurrences in the requested range; narrow it"),
+    )
+}
+
+/// A stored row that no longer parses is left out of every answer; only its id is logged.
+fn unreadable(ev: &Event) {
+    tracing::warn!(event_id = %ev.id, "stored event does not parse; skipped from range queries");
+}
+
+/// A series with its times parsed once, and its starts in the range.
+struct Series<'a> {
+    ev: &'a Event,
+    rrule: &'a str,
+    p: Parts,
+    exdates: Vec<When>,
+    zone: Tz,
+    /// Starts overlapping the range, exdates removed, before any override is applied.
+    starts: Vec<When>,
+}
+
+impl<'a> Series<'a> {
+    /// `None` when the row, its exdates or its rule do not parse.
+    fn expand(
+        ev: &'a Event,
+        qtz: Tz,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> ApiResult<Option<Self>> {
+        let parsed = Parts::of(ev).and_then(|p| Some((exdates_of(ev, p.all_day)?, p)));
+        let (Some(rrule), Some((exdates, p))) = (ev.rrule.as_deref(), parsed) else {
+            unreadable(ev);
+            return Ok(None);
+        };
+        let zone = p.zone(qtz);
+        let mut s = Series {
+            ev,
+            rrule,
+            p,
+            exdates,
+            zone,
+            starts: vec![],
+        };
+        // A series that begins after the range has nothing in it; its rule is not even built.
+        if s.p.start.instant(zone) < to {
+            match recur::starts(
+                rrule,
+                s.p.start,
+                s.duration(),
+                &s.exdates,
+                zone,
+                from,
+                to,
+                MAX_OCCURRENCES,
+            ) {
+                Ok(v) => s.starts = v,
+                Err(e) if e.code == "too_many_occurrences" => return Err(e),
+                Err(_) => {
+                    unreadable(ev);
+                    return Ok(None);
                 }
-                When::Timed(_) => {
-                    let e = start_utc + duration;
-                    (When::Timed(e.with_timezone(&zone).naive_local()), e)
-                }
-            };
-            occurrence(
-                series,
-                &s.to_string(),
-                &end.to_string(),
-                Some(s.to_string()),
-                start_utc,
-                end_utc,
-            )
-        })
-        .collect())
+            }
+        }
+        Ok(Some(s))
+    }
+
+    /// A timed occurrence is as long as the series' own first one; an all-day one spans whole days.
+    fn duration(&self) -> Duration {
+        match (self.p.start, self.p.end) {
+            (When::Date(a), When::Date(b)) => Duration::days((b - a).num_days()),
+            _ => self.p.end.instant(self.zone) - self.p.start.instant(self.zone),
+        }
+    }
+
+    fn occurrence(&self, s: When) -> Occurrence {
+        let duration = self.duration();
+        let start_utc = s.instant(self.zone);
+        let (end, end_utc) = match s {
+            When::Date(d) => {
+                let e = When::Date(d + duration);
+                (e, e.instant(self.zone))
+            }
+            When::Timed(_) => {
+                let e = start_utc + duration;
+                (When::Timed(e.with_timezone(&self.zone).naive_local()), e)
+            }
+        };
+        occurrence(
+            self.ev,
+            (&s.to_string(), &end.to_string()),
+            Some(s.to_string()),
+            (start_utc, end_utc),
+        )
+    }
+}
+
+/// Whether the override `ev` (read as `p`) replaces an occurrence of `series`, and so is shown or hides one.
+/// Membership in the expanded starts settles it for an occurrence in the range; any other needs the rule.
+fn is_effective(ev: &Event, p: &Parts, series: &Series, overlaps: bool) -> Option<When> {
+    let at = parse_when(ev.original_start.as_deref()?, ev.all_day).ok()?;
+    if series.p.all_day != p.all_day {
+        return None;
+    }
+    let found = series.starts.contains(&at)
+        || (overlaps
+            && recur::is_occurrence(
+                series.rrule,
+                series.p.start,
+                &series.exdates,
+                series.zone,
+                at,
+            ));
+    found.then_some(at)
 }
 
 /// Turns the candidate rows into the sorted occurrences overlapping [from, to).
@@ -687,66 +750,58 @@ fn occurrences_in(
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> ApiResult<Vec<Occurrence>> {
-    let series: HashMap<Uuid, &Event> = rows
+    let mut series = HashMap::new();
+    for ev in rows
         .iter()
         .filter(|e| e.recurring_event_id.is_none() && e.rrule.is_some())
-        .map(|e| (e.id, e))
-        .collect();
+    {
+        if let Some(s) = Series::expand(ev, qtz, from, to)? {
+            series.insert(ev.id, s);
+        }
+    }
     let mut out = Vec::new();
     let mut replaced = HashSet::new();
     // Singles and overrides; an override that is not effective is dropped and replaces nothing.
     for ev in rows.iter().filter(|e| e.rrule.is_none()) {
-        let Some(p) = Parts::of(ev) else { continue };
-        if let Some(sid) = ev.recurring_event_id {
-            let effective = (|| {
-                let s = series.get(&sid)?;
-                let sp = Parts::of(s)?;
-                let at = parse_when(ev.original_start.as_deref()?, ev.all_day).ok()?;
-                (sp.all_day == p.all_day
-                    && recur::is_occurrence(
-                        s.rrule.as_deref()?,
-                        sp.start,
-                        &exdates_of(s, sp.all_day),
-                        sp.zone(qtz),
-                        at,
-                    ))
-                .then_some(())
-            })();
-            if effective.is_none() {
-                continue;
-            }
-            replaced.insert((sid, ev.original_start.clone().unwrap_or_default()));
-        }
+        let Some(p) = Parts::of(ev) else {
+            unreadable(ev);
+            continue;
+        };
         let zone = p.zone(qtz);
         let (start_utc, end_utc) = (p.start.instant(zone), p.end.instant(zone));
-        if start_utc < to && end_utc > from {
+        let overlaps = start_utc < to && end_utc > from;
+        if let Some(sid) = ev.recurring_event_id {
+            let Some(at) = series
+                .get(&sid)
+                .and_then(|s| is_effective(ev, &p, s, overlaps))
+            else {
+                continue;
+            };
+            replaced.insert((sid, at));
+        }
+        if overlaps {
             out.push(occurrence(
                 ev,
-                &ev.start,
-                &ev.end,
+                (&ev.start, &ev.end),
                 ev.original_start.clone(),
-                start_utc,
-                end_utc,
+                (start_utc, end_utc),
             ));
         }
     }
     for s in series.values() {
-        let more = expand(
-            s,
-            &replaced,
-            qtz,
-            from,
-            to,
-            MAX_OCCURRENCES.saturating_sub(out.len()),
-        )?;
-        out.extend(more);
+        for &st in s
+            .starts
+            .iter()
+            .filter(|st| !replaced.contains(&(s.ev.id, **st)))
+        {
+            out.push(s.occurrence(st));
+        }
+        if out.len() > MAX_OCCURRENCES {
+            return Err(too_many());
+        }
     }
     if out.len() > MAX_OCCURRENCES {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "too_many_occurrences",
-            format!("more than {MAX_OCCURRENCES} occurrences in the requested range; narrow it"),
-        ));
+        return Err(too_many());
     }
     out.sort_by_key(|o| (o.start_utc, o.event.id));
     Ok(out)

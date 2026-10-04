@@ -114,7 +114,14 @@ pub fn starts(
             When::Timed(_) => When::Timed(dt.naive_utc()),
         })
         .filter(|w| !exdates.contains(w))
-        .filter(|w| w.instant(tz) < to && w.instant(tz) + duration > from)
+        .filter(|w| {
+            // A day ends at the next midnight in `tz`, which is not always 24 hours on.
+            let end = match w {
+                When::Date(d) => When::Date(*d + Duration::days(duration.num_days())).instant(tz),
+                When::Timed(_) => w.instant(tz) + duration,
+            };
+            w.instant(tz) < to && end > from
+        })
         .collect();
     if out.len() > limit {
         return Err(too_many(limit));
@@ -339,6 +346,40 @@ mod tests {
             W,
             t("2026-10-26T09:00:00")
         ));
+    }
+
+    #[test]
+    fn all_day_occurrence_ends_at_the_next_midnight_in_tz() {
+        let run = |from, to| {
+            starts(
+                "FREQ=DAILY",
+                d("2027-03-25"),
+                Duration::days(1),
+                &[],
+                W,
+                z(from),
+                z(to),
+                5000,
+            )
+            .unwrap()
+        };
+        // 2027-03-28 lasts 23 hours in Warsaw, so it is over at 22:00Z
+        assert_eq!(
+            run("2027-03-28T22:00:00", "2027-03-29T22:00:00"),
+            [d("2027-03-29")]
+        );
+        let got = starts(
+            "FREQ=DAILY",
+            d("2026-10-20"),
+            Duration::days(1),
+            &[],
+            W,
+            z("2026-10-25T22:30:00"),
+            z("2026-10-25T22:45:00"),
+            5000,
+        )
+        .unwrap();
+        assert_eq!(got, [d("2026-10-25")]);
     }
 
     fn starts_in(rule: &str, start: When, tz: Tz, from: &str, to: &str) -> Vec<When> {

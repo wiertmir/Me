@@ -11,7 +11,7 @@ const DATE: &str = "%Y-%m-%d";
 const DATE_TIME: &str = "%Y-%m-%dT%H:%M:%S";
 
 /// An event boundary: a calendar day for all-day events, a wall-clock time otherwise.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum When {
     Date(NaiveDate),
     Timed(NaiveDateTime),
