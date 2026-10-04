@@ -21,14 +21,15 @@ fn invalid(message: String) -> ApiError {
     ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "validation", message)
 }
 
-/// Exact forms only: `%Y-%m-%d` when `all_day`, `%Y-%m-%dT%H:%M:%S` otherwise.
+/// Exact forms only (it must print back as given): `%Y-%m-%d` when `all_day`, `%Y-%m-%dT%H:%M:%S` otherwise.
 pub fn parse_when(s: &str, all_day: bool) -> ApiResult<When> {
     let parsed = if all_day {
         NaiveDate::parse_from_str(s, DATE).map(When::Date)
     } else {
         NaiveDateTime::parse_from_str(s, DATE_TIME).map(When::Timed)
     };
-    parsed.map_err(|_| {
+    // chrono also takes `9:00:00`, a leading space or `+`; only the canonical spelling is one value per instant.
+    parsed.ok().filter(|w| w.to_string() == s).ok_or_else(|| {
         let form = if all_day {
             "YYYY-MM-DD"
         } else {
@@ -110,6 +111,11 @@ mod tests {
             ("2026-10-05", false),
             ("2026-10-05T09:00:00Z", false),
             ("2026-13-01", true),
+            ("2026-10-12T9:00:00", false),
+            ("2026-10-12T9:0:0", false),
+            (" 2026-10-12T09:00:00", false),
+            ("+2026-10-12T09:00:00", false),
+            ("2026-10-5", true),
         ] {
             assert!(parse_when(s, all_day).is_err(), "{s} {all_day}");
         }

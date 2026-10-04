@@ -319,8 +319,8 @@ async fn create_event(
                 let row = c
                     .query_row(
                         "SELECT uid, all_day FROM events WHERE id = ?1 AND calendar_id = ?2 AND deleted = 0
-                         AND recurring_event_id IS NULL AND rrule IS NOT NULL",
-                        params![series.to_string(), cal],
+                         AND recurring_event_id IS NULL AND rrule IS NOT NULL AND calendar_id IN (SELECT id FROM calendars WHERE user_id = ?3)",
+                        params![series.to_string(), cal, user.to_string()],
                         |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
                     )
                     .optional()?;
@@ -334,8 +334,8 @@ async fn create_event(
                 }
                 let taken = exists(
                     c,
-                    "SELECT 1 FROM events WHERE recurring_event_id = ?1 AND original_start = ?2 AND deleted = 0",
-                    params![series.to_string(), inp.original_start],
+                    "SELECT 1 FROM events WHERE recurring_event_id = ?1 AND original_start = ?2 AND deleted = 0 AND calendar_id IN (SELECT id FROM calendars WHERE user_id = ?3)",
+                    params![series.to_string(), inp.original_start, user.to_string()],
                 )?;
                 if taken {
                     return Err(conflict("that occurrence already has an override").into());
@@ -346,8 +346,8 @@ async fn create_event(
                 let uid = inp.uid.clone().unwrap_or_else(|| id.to_string());
                 let taken = exists(
                     c,
-                    "SELECT 1 FROM events WHERE calendar_id = ?1 AND uid = ?2 AND deleted = 0 AND recurring_event_id IS NULL",
-                    params![cal, uid],
+                    "SELECT 1 FROM events WHERE calendar_id = ?1 AND uid = ?2 AND deleted = 0 AND recurring_event_id IS NULL AND calendar_id IN (SELECT id FROM calendars WHERE user_id = ?3)",
+                    params![cal, uid, user.to_string()],
                 )?;
                 if taken {
                     return Err(conflict("uid is already in use in this calendar").into());
@@ -451,30 +451,21 @@ async fn replace_event(
         if is_override && (inp.rrule.is_some() || !inp.exdates.is_empty()) {
             return Err(invalid("an override has no rrule and no exdates").into());
         }
-        let has_overrides = exists(
-            c,
-            "SELECT 1 FROM events WHERE recurring_event_id = ?1 AND deleted = 0",
-            [id.to_string()],
-        )?;
-        // Overrides name occurrences of their series in its form, and are meaningless without a rule.
-        if (is_override || has_overrides) && inp.all_day != old.all_day {
-            return Err(invalid("all_day cannot change while overrides exist").into());
-        }
-        if has_overrides && inp.rrule.is_none() {
-            return Err(invalid("a series with overrides keeps its rrule").into());
+        if is_override && inp.all_day != old.all_day {
+            return Err(invalid("an override keeps its series' all_day").into());
         }
         let revision = bump(c, user, old.calendar_id)?;
         c.execute(
             "UPDATE events SET summary = ?2, description = ?3, location = ?4, all_day = ?5, start = ?6, \"end\" = ?7,
                 tz = ?8, rrule = ?9, exdates = ?10, reminders = ?11, revision = ?12, start_utc = ?13,
                 end_utc = ?14, updated_at = ?15
-             WHERE id = ?1",
+             WHERE id = ?1 AND calendar_id IN (SELECT id FROM calendars WHERE user_id = ?16)",
             params![
                 id.to_string(), inp.summary, inp.description, inp.location, inp.all_day, inp.start, inp.end,
                 inp.tz, inp.rrule,
                 serde_json::to_string(&inp.exdates).unwrap_or_default(),
                 serde_json::to_string(&inp.reminders).unwrap_or_default(),
-                revision, ck.start_utc, ck.end_utc, Utc::now().timestamp(),
+                revision, ck.start_utc, ck.end_utc, Utc::now().timestamp(), user.to_string(),
             ],
         )?;
         Ok(load(c, user, id)?.expect("row just updated"))
@@ -514,12 +505,13 @@ async fn delete_event(
         let revision = bump(c, user, old.calendar_id)?;
         c.execute(
             "UPDATE events SET deleted = 1, revision = ?3, updated_at = ?4
-             WHERE calendar_id = ?2 AND (id = ?1 OR recurring_event_id = ?1) AND deleted = 0",
+             WHERE calendar_id = ?2 AND (id = ?1 OR recurring_event_id = ?1) AND deleted = 0 AND calendar_id IN (SELECT id FROM calendars WHERE user_id = ?5)",
             params![
                 id.to_string(),
                 old.calendar_id.to_string(),
                 revision,
-                Utc::now().timestamp()
+                Utc::now().timestamp(),
+                user.to_string()
             ],
         )?;
         Ok(old.calendar_id)

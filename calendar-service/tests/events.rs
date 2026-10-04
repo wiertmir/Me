@@ -2,6 +2,7 @@ mod support;
 use axum::http::Method;
 use serde_json::{Value, json};
 use support::{ALICE, BOB, TestApp};
+use uuid::Uuid;
 
 const CALS: &str = "/calendar/v1/calendars";
 
@@ -386,4 +387,78 @@ async fn isolation() {
     }
     let (s, _, _) = app.call(Method::GET, &p, ALICE, None).await;
     assert_eq!(s, 200);
+}
+
+#[tokio::test]
+async fn times_must_be_canonical() {
+    let app = TestApp::spawn().await;
+    let (cal, series, _) = series_with_override(&app).await;
+    let (s, _) = post(
+        &app,
+        ALICE,
+        &cal,
+        with(timed(), json!({"start": "2026-10-05T9:00:00"})),
+    )
+    .await;
+    assert_eq!(s, 422);
+    let ov = with(
+        timed(),
+        json!({"recurring_event_id": series["id"], "original_start": "2026-10-12T9:00:00"}),
+    );
+    assert_eq!(post(&app, ALICE, &cal, ov).await.0, 422);
+}
+
+#[tokio::test]
+async fn series_edits_keep_overrides() {
+    let app = TestApp::spawn().await;
+    let (_, series, o) = series_with_override(&app).await;
+    let (s, _, _) = app
+        .call(Method::PUT, &path(&series), ALICE, Some(timed()))
+        .await;
+    assert_eq!(s, 200);
+    let (s, _, got) = app.call(Method::GET, &path(&o), ALICE, None).await;
+    assert_eq!((s.as_u16(), &got), (200, &o));
+}
+
+#[tokio::test]
+async fn override_rules_on_write() {
+    let app = TestApp::spawn().await;
+    let (cal, series, o) = series_with_override(&app).await;
+    let ov = |extra: Value| {
+        with(
+            timed(),
+            with(
+                json!({"recurring_event_id": series["id"], "original_start": "2026-10-19T09:00:00"}),
+                extra,
+            ),
+        )
+    };
+    let (s, _) = post(&app, ALICE, &cal, ov(json!({"uid": "other"}))).await;
+    assert_eq!(s, 422);
+    let (s, _) = post(
+        &app,
+        ALICE,
+        &cal,
+        ov(json!({"all_day": true, "start": "2026-10-19", "end": "2026-10-20", "tz": null, "original_start": "2026-10-19"})),
+    )
+    .await;
+    assert_eq!(s, 422);
+    let put_o = |extra: Value| {
+        let (app, p, body) = (&app, path(&o), with(timed(), extra));
+        async move { app.call(Method::PUT, &p, ALICE, Some(body)).await }
+    };
+    for extra in [
+        json!({"rrule": "FREQ=DAILY"}),
+        json!({"exdates": ["2026-10-19T09:00:00"]}),
+        json!({"all_day": true, "start": "2026-10-12", "end": "2026-10-13", "tz": null}),
+        json!({"recurring_event_id": Uuid::new_v4()}),
+        json!({"original_start": "2026-10-19T09:00:00"}),
+    ] {
+        let (s, _, e) = put_o(extra.clone()).await;
+        assert_eq!(
+            (s.as_u16(), &e["code"]),
+            (422, &json!("validation")),
+            "{extra}"
+        );
+    }
 }
