@@ -89,6 +89,19 @@ pub fn to_utc(local: NaiveDateTime, tz: Tz) -> DateTime<Utc> {
 }
 
 impl When {
+    /// When an occurrence starting here ends: `duration` later on the wall clock (whole days for a date), read
+    /// in `tz`. A start in a skipped hour has moved past the gap, and that reading can then fall before it;
+    /// the occurrence keeps its length in real time instead.
+    pub fn end_instant(self, duration: Duration, tz: Tz) -> DateTime<Utc> {
+        match self {
+            When::Date(d) => When::Date(d + Duration::days(duration.num_days())).instant(tz),
+            When::Timed(t) => {
+                let (start, end) = (to_utc(t, tz), to_utc(t + duration, tz));
+                if end > start { end } else { start + duration }
+            }
+        }
+    }
+
     /// Dates are midnight in `tz`.
     pub fn instant(self, tz: Tz) -> DateTime<Utc> {
         match self {

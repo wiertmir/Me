@@ -231,7 +231,10 @@ occurrence of each series minus `exdates`, with overrides in place of the
 occurrences they replace. A timed occurrence keeps the series' wall-clock
 length: it ends at its wall-clock start plus `end` minus `start` of the series,
 read in the event's zone, so a 22:00 to 06:00 series ends at 06:00 on a
-daylight-saving night too. An occurrence is the stored event with:
+daylight-saving night too. The one exception: when an occurrence starts in
+a skipped hour, its start has moved past the gap, and it keeps its length in
+real time instead (02:30 to 03:00 becomes 03:30 to 04:00). An occurrence is
+the stored event with:
 
 - `start` and `end` set to that occurrence's times,
 - `start_utc` and `end_utc`, the same as instants,

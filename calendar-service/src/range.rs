@@ -212,15 +212,14 @@ impl<'a> Series<'a> {
     fn occurrence(&self, s: When) -> Occurrence {
         let duration = self.duration();
         let start_utc = s.instant(self.zone);
-        let (end, end_utc) = match s {
-            When::Date(d) => {
-                let e = When::Date(d + duration);
-                (e, e.instant(self.zone))
+        let end_utc = s.end_instant(duration, self.zone);
+        let end = match s {
+            When::Date(d) => When::Date(d + duration),
+            // The wall-clock end, unless a start in a skipped hour pushed the end on: then what the clock shows.
+            When::Timed(t) if to_utc(t + duration, self.zone) == end_utc => {
+                When::Timed(t + duration)
             }
-            When::Timed(t) => {
-                let e = t + duration;
-                (When::Timed(e), to_utc(e, self.zone))
-            }
+            When::Timed(_) => When::Timed(end_utc.with_timezone(&self.zone).naive_local()),
         };
         occurrence(
             self.ev,

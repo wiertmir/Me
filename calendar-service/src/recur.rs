@@ -6,7 +6,7 @@ use chrono_tz::Tz;
 use common::{ApiError, ApiResult};
 use rrule::{Frequency, RRule, RRuleSet};
 
-use crate::time::{When, to_utc};
+use crate::time::When;
 
 // The crate's own cap on a single query result.
 const CRATE_MAX: usize = u16::MAX as usize;
@@ -119,14 +119,8 @@ pub fn starts(
             When::Timed(_) => When::Timed(dt.naive_utc()),
         })
         .filter(|w| !exdates.contains(w))
-        .filter(|w| {
-            // A day ends at the next midnight in `tz`, which is not always 24 hours on; nor is a night.
-            let end = match w {
-                When::Date(d) => When::Date(*d + Duration::days(duration.num_days())).instant(tz),
-                When::Timed(t) => to_utc(*t + duration, tz),
-            };
-            w.instant(tz) < to && end > from
-        })
+        // A day ends at the next midnight in `tz`, which is not always 24 hours on; nor is a night.
+        .filter(|w| w.instant(tz) < to && w.end_instant(duration, tz) > from)
         .collect();
     if out.len() > limit {
         return Err(too_many(limit));
@@ -261,6 +255,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got, [t("2026-10-07T08:00:00")]);
+    }
+
+    #[test]
+    fn occurrence_starting_in_a_gap_ends_after_it_starts() {
+        // 02:30 to 03:00 on the wall. On 2027-03-28 02:30 does not exist and becomes 03:30 (01:30Z), so
+        // the half hour runs to 02:00Z; it does not end back at 03:00 (01:00Z), before it began.
+        let run = |from, to| {
+            starts(
+                "FREQ=DAILY",
+                t("2027-03-27T02:30:00"),
+                Duration::minutes(30),
+                &[],
+                W,
+                z(from),
+                z(to),
+                5000,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            run("2027-03-28T01:40:00", "2027-03-28T01:50:00"),
+            [t("2027-03-28T02:30:00")]
+        );
+        assert_eq!(
+            run("2027-03-28T02:00:00", "2027-03-28T02:10:00"),
+            [] as [When; 0]
+        );
     }
 
     #[test]

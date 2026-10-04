@@ -561,6 +561,31 @@ async fn nightly_series_keeps_its_wall_clock_end_across_dst() {
 }
 
 #[tokio::test]
+async fn occurrence_starting_in_a_gap_ends_after_it_starts() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app).await;
+    post(
+        &app,
+        &cal,
+        with(
+            timed("2027-03-27T02:30:00", "2027-03-27T03:00:00"),
+            json!({"rrule": "FREQ=DAILY"}),
+        ),
+    )
+    .await;
+    // 02:30 is skipped on 2027-03-28 and becomes 03:30; the half hour then ends at 04:00, not at 03:00
+    let got = occurrences(&app, &cal, "2027-03-28T00:00:00Z", "2027-03-28T12:00:00Z").await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0]["start"], "2027-03-28T02:30:00");
+    assert_eq!(got[0]["start_utc"], "2027-03-28T01:30:00Z");
+    assert_eq!(got[0]["end"], "2027-03-28T04:00:00");
+    assert_eq!(got[0]["end_utc"], "2027-03-28T02:00:00Z");
+    // a range inside that half hour finds it
+    let got = occurrences(&app, &cal, "2027-03-28T01:40:00Z", "2027-03-28T01:50:00Z").await;
+    assert_eq!(got.len(), 1);
+}
+
+#[tokio::test]
 async fn series_first_night_on_dst_keeps_wall_clock_end() {
     let app = TestApp::spawn().await;
     let cal = cal(&app).await;
