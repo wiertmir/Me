@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 pub mod events;
 pub mod openapi;
+pub mod range;
 pub mod recur;
 pub mod time;
 
@@ -87,6 +88,7 @@ pub fn app(state: AppState) -> Router {
         .routes(routes!(health))
         .merge(calendars::router())
         .merge(events::router())
+        .merge(range::router())
         .split_for_parts();
     router
         .method_not_allowed_fallback(method_not_allowed)
