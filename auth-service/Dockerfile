@@ -4,6 +4,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY common common
 COPY auth-service auth-service
+COPY calendar-service calendar-service
 # The cache mounts keep the crate registry and the build directory between builds.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \

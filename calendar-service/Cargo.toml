@@ -1,0 +1,24 @@
+[package]
+name = "calendar-service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+common = { version = "0.1.0", path = "../common" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+utoipa = { version = "6.0.0", features = ["chrono", "uuid"] }
+utoipa-axum = "0.3.0"
+uuid = { version = "1.27.0", features = ["serde", "v4"] }
+
+[dev-dependencies]
+base64 = "0.23.1"
+jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
+p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
+rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "form"] }
+tempfile = "3.27.0"

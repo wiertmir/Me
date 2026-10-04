@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["common", "auth-service"]
+members = ["common", "auth-service", "calendar-service"]
 
 # Argon2 is unusably slow unoptimised; keep dependencies optimised in dev and test builds.
 [profile.dev.package."*"]
