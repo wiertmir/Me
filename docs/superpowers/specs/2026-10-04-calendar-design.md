@@ -152,6 +152,10 @@ The service keeps no user table. It trusts the user id it is given.
 
 `(recurring_event_id, original_start)` is unique.
 
+A calendar holds at most 10,000 events that are not deleted, of which at most
+1,000 are series (events with an `rrule`). Together with the year window (see
+"Time") this bounds what one range query can cost.
+
 A new user has no rows. The first `GET /calendars` for a user who has no
 calendar creates one named "Personal".
 
@@ -169,11 +173,16 @@ calendar creates one named "Personal".
   occurs twice takes the earlier instant.
 - `exdates` and `original_start` use the same form as the series' `start` and
   are read in the series' zone.
+- **Year window:** every date and time a client sends — `start`, `end`,
+  `exdates`, `original_start`, and `from` and `to` of a range query — is in
+  the years 1900 to 2200; anything else is 422.
 
 ### Recurrence
 
 - `rrule` must parse, and its frequency must be daily, weekly, monthly or
   yearly; anything else is 422. `RDATE` and `EXRULE` are not supported.
+- One occurrence of a series is at most 366 days long (`end` minus `start`,
+  as instants), and its `end` is after its `start` on the wall clock too.
 - **Cancelled occurrence:** its start is added to the series' `exdates`.
 - **Changed occurrence (override):** a separate event with
   `recurring_event_id` and `original_start`. It replaces that occurrence in
@@ -216,7 +225,10 @@ after `from`, at most 366 days apart. `tz` (IANA name, default `UTC`) is the
 zone in which all-day dates are placed on the timeline. The answer is a list of
 occurrences that overlap the range, ordered by start: single events, each
 occurrence of each series minus `exdates`, with overrides in place of the
-occurrences they replace. An occurrence is the stored event with:
+occurrences they replace. A timed occurrence keeps the series' wall-clock
+length: it ends at its wall-clock start plus `end` minus `start` of the series,
+read in the event's zone, so a 22:00 to 06:00 series ends at 06:00 on a
+daylight-saving night too. An occurrence is the stored event with:
 
 - `start` and `end` set to that occurrence's times,
 - `start_utc` and `end_utc`, the same as instants,
@@ -249,10 +261,10 @@ The shared `{code, message}` shape from `common`.
 |---|---|---|
 | 401 | `unauthorized` | No valid token or service secret |
 | 404 | `not_found` | Unknown id, or someone else's |
-| 409 | `conflict` | `uid` already used in the calendar; an override for that occurrence already exists; calendar limit reached |
+| 409 | `conflict` | `uid` already used in the calendar; an override for that occurrence already exists; calendar limit reached; the calendar already holds 10,000 events or 1,000 series |
 | 410 | `sync_token_invalid` | `since` is ahead of the calendar |
 | 412 | `etag_mismatch` | Stale `If-Match` |
-| 422 | `validation` | Malformed body, bad zone, rule, colour or time order, length caps, range too long |
+| 422 | `validation` | Malformed body, bad zone, rule, colour or time order, length caps, range too long, a year outside 1900 to 2200, a series occurrence longer than 366 days |
 | 422 | `too_many_occurrences` | Range query over the cap |
 | 503 | `unavailable` | Signing keys cannot be fetched |
 
@@ -315,7 +327,10 @@ is served by a stub keys endpoint.
 - Recurrence: a weekly series across a daylight-saving change keeps its
   wall-clock time; all-day series; `exdates`; an override replaces its
   occurrence and can move it out of or into a range; a rule with `UNTIL` and
-  one with `COUNT`; refused frequencies; the 366-day and 5,000-occurrence caps.
+  one with `COUNT`; refused frequencies; the 366-day and 5,000-occurrence caps;
+  a nightly series across a daylight-saving change keeps its wall-clock end.
+- Limits: years outside 1900 to 2200, a series occurrence over 366 days, the
+  event and series caps per calendar.
 - Changes feed: full listing, incremental listing, tombstones, a token from the
   future.
 - `If-Match`: accepted, stale, absent.

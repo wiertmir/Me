@@ -124,12 +124,16 @@ development configuration; copy it to `config.local.toml` (git-ignored) for real
 | `[log]`          | `format` (`"pretty"` or `"json"`) and `level`                                        |
 
 Any value can be overridden by an environment variable named `ME_CALENDAR__<KEY>`, with `__` for a
-nested table: `ME_CALENDAR__SERVICE_SECRET`, `ME_CALENDAR__DATA_DIR`, `ME_CALENDAR__LOG__FORMAT=json`.
+nested table: `ME_CALENDAR__SERVICE_SECRET`, `ME_CALENDAR__DATA_DIR`,
+`ME_CALENDAR__LOG__FORMAT=json`.
 
 The API is under `/calendar/v1`. A caller sends either a bearer access token from `auth-service`, or
 (internal callers only, such as the planned CalDAV bridge) the headers `X-Service-Secret` and
 `X-User-Id`. The service secret may be the same value as `auth-service`'s or a different one; only
 internal callers use it. Caddy removes those two headers from requests on the public route.
+
+Limits: dates and times must be in the years 1900 to 2200, and one calendar holds at most 10,000
+events, of which at most 1,000 are repeating ones.
 
 For the home-network setup (the scripts, the app host and Kubernetes) do this once before the first
 start of `calendar-service`. The scripts `1-run-local-auth.sh`, `2-run-local-auth-web.sh`,
@@ -236,6 +240,7 @@ Build once:
 
 ```sh
 cargo build --release -p auth-service              # → target/release/auth-service
+cargo build --release -p calendar-service          # → target/release/calendar-service
 dotnet publish auth-web -c Release -o /opt/me/auth-web
 openssl rand -base64 32                            # a service secret
 ```
@@ -259,17 +264,29 @@ DataProtection__Path=/var/lib/me/dp-keys \
 dotnet AuthWeb.dll
 ```
 
-- `AuthService__Secret` is required (at least 16 characters) and must equal the service's
-  `service_secret`. The service does not accept the example secret on a non-loopback address.
+Start `calendar-service` with its own configuration file (a copy of its example with
+`listen = "127.0.0.1:8083"`, an absolute `data_dir`, `issuer` set to the public origin and
+`jwks_url = "http://127.0.0.1:8081/.well-known/jwks.json"`, so that it fetches the signing keys from
+`auth-service` directly and not through the proxy):
+
+```sh
+ME_CALENDAR__SERVICE_SECRET='<a secret>' target/release/calendar-service /etc/me/calendar.toml
+```
+
+- `AuthService__Secret` is required (at least 16 characters) and must equal `service_secret` of
+  `auth-service`. Neither service accepts the example secret on a non-loopback address.
+- `ME_CALENDAR__SERVICE_SECRET` is the secret of `calendar-service`'s internal callers (at least 16
+  characters); it may be the same value or a different one.
 - `DataProtection__Path` must be a directory that survives restarts and that only this process's
   user can read. The default (`./data/dp-keys`) is relative to the directory you start it in.
-- Both processes listen on loopback (`127.0.0.1`) and speak plain HTTP; the proxy in front is the
-  only thing that should be reachable from outside, and it provides TLS. In `Production`,
+- All three processes listen on loopback (`127.0.0.1`) and speak plain HTTP; the proxy in front is
+  the only thing that should be reachable from outside, and it provides TLS. In `Production`,
   `auth-web` serves only requests that the proxy reports as HTTPS (`X-Forwarded-Proto: https`);
   a plain-HTTP request sent straight to port 5080 fails.
-- Set `LOG_FORMAT=json` and `ME_AUTH__LOG__FORMAT=json` if a log collector reads the output.
+- Set `LOG_FORMAT=json`, `ME_AUTH__LOG__FORMAT=json` and `ME_CALENDAR__LOG__FORMAT=json` if a log
+  collector reads the output.
 
-Run both under a process supervisor of your choice so that they restart; neither daemonises.
+Run all three under a process supervisor of your choice so that they restart; none daemonises.
 
 ## Running under .NET Aspire
 
@@ -279,14 +296,15 @@ dotnet run --project apphost
 
 runs the home-network setup, the same four processes as the `N-run-*.sh` scripts (`auth-service`,
 `calendar-service`, `auth-web` in `Production`, Caddy), with the same `.env`,
-`auth-service/config.local.toml`, `calendar-service/config.local.toml`, `Caddyfile` and data directories. Stop the scripts or the Kubernetes cluster first; they use the
-same ports. The console prints the login link of the Aspire dashboard
-(`http://localhost:15080/login?t=…`), which shows:
+`auth-service/config.local.toml`, `calendar-service/config.local.toml`, `Caddyfile` and data
+directories. Stop the scripts or the Kubernetes cluster first; they use the same ports. The console
+prints the login link of the Aspire dashboard (`http://localhost:15080/login?t=…`), which shows:
 
 - Resources: the four processes with their state, start/stop/restart and console logs, and under
   Graph how they depend on each other (Caddy on all three, `auth-web` and `calendar-service` on
   `auth-service`);
-- Traces: every request as one trace across `auth-web` and `auth-service`.
+- Traces: every request as one trace across `auth-web` and `auth-service`, and the requests to
+  `calendar-service`.
 
 `auth-service` is started with `cargo run --release`; the others wait until its `/health` answers.
 
@@ -303,8 +321,8 @@ every process.
 
 - `auth-web` records a span per request and per call to `auth-service`, and sends the trace context
   along, so the service's span joins the same trace.
-- `auth-service` records a span per request, named by method and route template, with the request's
-  log events attached.
+- `auth-service` and `calendar-service` record a span per request, named by method and route
+  template, with the request's log events attached.
 - The rules for logs hold for traces: no query strings, and for calls to `auth-service` only the
   origin, never the path, since both can carry one-time tokens.
 
@@ -313,8 +331,8 @@ every process.
 `./run-kubernetes.sh` runs the same setup on a local [kind](https://kind.sigs.k8s.io) cluster named
 `me` (needs Docker, `kind` and `kubectl`). It builds the three images
 ([`auth-service/Dockerfile`](auth-service/Dockerfile),
-[`calendar-service/Dockerfile`](calendar-service/Dockerfile), [`auth-web/Dockerfile`](auth-web/Dockerfile)),
-loads them into the cluster and applies [`k8s/me.yaml`](k8s/me.yaml). Run it again after a code or
+[`calendar-service/Dockerfile`](calendar-service/Dockerfile),
+[`auth-web/Dockerfile`](auth-web/Dockerfile)), loads them into the cluster and applies [`k8s/me.yaml`](k8s/me.yaml). Run it again after a code or
 configuration change.
 
 The three services and Caddy are four containers of one pod. They share its network, so they talk
@@ -328,10 +346,11 @@ Structured logs page, which stays empty; the data is on the Traces page, once re
 made. Sending telemetry to it needs a key that the script generates on every run.
 
 The script takes its settings from the files the plain processes use: `.env` (as the secret
-`me-env`), `auth-service/config.local.toml`, `calendar-service/config.local.toml` and the `Caddyfile` (as the config map `me-config`). The
-data directories are the same ones too (`./data`, `auth-web/data/dp-keys`, Caddy's
-`~/.local/share/caddy`), mounted into the cluster and written as user id 1000. So accounts, sessions
-and the certificate carry over in both directions, and only one of the two ways can run at a time.
+`me-env`), `auth-service/config.local.toml`, `calendar-service/config.local.toml` and the
+`Caddyfile` (as the config map `me-config`). The data directories are the same ones too (`./data`,
+`auth-web/data/dp-keys`, Caddy's `~/.local/share/caddy`), mounted into the cluster and written as
+user id 1000. So accounts, sessions and the certificate carry over in both directions, and only one
+of the two ways can run at a time.
 
 ```sh
 kubectl --context kind-me -n me logs deploy/auth -c auth-service -f    # or -c calendar-service, -c auth-web, -c caddy
@@ -363,8 +382,8 @@ There are no database migrations yet. Each service creates missing tables at sta
 alters an existing one, so a new version whose schema differs from the one that created your
 database will not work with it. Until migrations exist, such a version needs a fresh database:
 stop the service, move its database (`auth.db` or `calendar.db`) away and start again, which means
-every account (or every calendar and event) has to be created again. Versions that do not change the schema can be swapped in place. Keep a backup before any
-upgrade.
+every account (or every calendar and event) has to be created again. Versions that do not change the
+schema can be swapped in place. Keep a backup before any upgrade.
 
 ## Locked out
 
@@ -390,9 +409,9 @@ simpler to stop the service, delete the data directory and start again.
 
 Each service describes its API at `/api/docs` (a browsable page) and `/api/openapi.json`, on its
 internal address: <http://127.0.0.1:8081/api/docs> for `auth-service`,
-<http://127.0.0.1:8083/api/docs> for `calendar-service`. The page loads its viewer script from a public
-CDN (`cdn.jsdelivr.net`), so it needs internet access in the browser. Neither endpoint asks for a
-secret; do not expose `/api/*` publicly (the Caddyfile does not).
+<http://127.0.0.1:8083/api/docs> for `calendar-service`. The page loads its viewer script from a
+public CDN (`cdn.jsdelivr.net`), so it needs internet access in the browser. Neither endpoint asks
+for a secret; do not expose `/api/*` publicly (the Caddyfile does not).
 
 ## Logging
 
@@ -407,14 +426,15 @@ All processes log to the console.
   that they print request URLs, and those carry one-time tokens. One line per request is logged
   with the path only, never the query string.
 
-Timestamps in both processes are local time: `2026-10-04 09:28:15.303` on the console, and with
+Timestamps in all processes are local time: `2026-10-04 09:28:15.303` on the console, and with
 the UTC offset in JSON lines (`2026-10-04T09:28:15.303+09:00`).
 
 Every request gets an `X-Request-Id`. `auth-web` creates it, or keeps the one that arrived with the
 request when it is well-formed (1 to 128 printable ASCII characters, no spaces) — from the proxy or
 from any client, so do not treat the id as proof of where a request came from. It writes the id on
 each of its log lines and sends it with its API calls; the service logs the same id. One id
-therefore finds a user action in both logs.
+therefore finds a user action in both logs. `calendar-service` does the same for the requests it
+receives: it keeps a well-formed id or creates one, and writes it on its log lines.
 
 Secrets are never logged, with one exception: the one-time password of the seeded admin. (The
 `reset-password` command prints its one-time password to standard output, not to the log.) A login
