@@ -12,6 +12,10 @@ const ROUTES: &[(&str, &str)] = &[
     ("get", "/calendar/v1/calendars/{id}"),
     ("patch", "/calendar/v1/calendars/{id}"),
     ("delete", "/calendar/v1/calendars/{id}"),
+    ("post", "/calendar/v1/calendars/{id}/events"),
+    ("get", "/calendar/v1/events/{id}"),
+    ("put", "/calendar/v1/events/{id}"),
+    ("delete", "/calendar/v1/events/{id}"),
 ];
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];

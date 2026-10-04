@@ -2,6 +2,7 @@ pub mod calendars;
 pub mod caller;
 pub mod config;
 pub mod db;
+pub mod events;
 pub mod openapi;
 pub mod recur;
 pub mod time;
@@ -85,6 +86,7 @@ pub fn app(state: AppState) -> Router {
     let (router, api) = OpenApiRouter::with_openapi(openapi::ApiDoc::openapi())
         .routes(routes!(health))
         .merge(calendars::router())
+        .merge(events::router())
         .split_for_parts();
     router
         .method_not_allowed_fallback(method_not_allowed)
