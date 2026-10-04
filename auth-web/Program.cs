@@ -30,8 +30,12 @@ var builder = WebApplication.CreateBuilder(args);
 // scripts; does nothing in a published copy, which has them in wwwroot.
 builder.WebHost.UseStaticWebAssets();
 // Serilog is the only logging provider. LOG_FORMAT=json selects JSON lines; anything else the coloured console.
+// LOG_DIR adds the same lines in a file per day, <LOG_DIR>/auth-web-YYYYMMDD.log (the newest 31 are kept).
 builder.Services.AddSerilog(log =>
 {
+    const string textTemplate =
+        "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] [{RequestId}] {SourceContext}: {Message:lj}{NewLine}{Exception}";
+    var json = Environment.GetEnvironmentVariable("LOG_FORMAT") == "json";
     log.MinimumLevel.Debug()
         // Below Warning the framework and HttpClient loggers print request URLs, which hold one-time tokens.
         .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
@@ -40,12 +44,18 @@ builder.Services.AddSerilog(log =>
         .MinimumLevel.Override("Microsoft.Extensions.Http", LogEventLevel.Information)
         .Enrich.FromLogContext();
     // Local time: JSON lines carry the UTC offset, the console format leaves it out.
-    if (Environment.GetEnvironmentVariable("LOG_FORMAT") == "json")
+    if (json)
         log.WriteTo.Console(new JsonFormatter(renderMessage: true));
     else
-        log.WriteTo.Console(
-            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] [{RequestId}] {SourceContext}: {Message:lj}{NewLine}{Exception}",
-            theme: consoleTheme);
+        log.WriteTo.Console(outputTemplate: textTemplate, theme: consoleTheme);
+    if (Environment.GetEnvironmentVariable("LOG_DIR") is { Length: > 0 } dir)
+    {
+        var path = Path.Combine(dir, "auth-web-.log");   // Serilog puts the date before the extension
+        if (json)
+            log.WriteTo.File(new JsonFormatter(renderMessage: true), path, rollingInterval: RollingInterval.Day);
+        else
+            log.WriteTo.File(path, outputTemplate: textTemplate, rollingInterval: RollingInterval.Day);
+    }
 });
 builder.AddAuthWeb();
 

@@ -15,3 +15,5 @@ service_secret = "dev-only-service-secret-change-me"
 [log]
 format = "pretty"        # "pretty" | "json"
 level = "debug"
+# Also write the log to <dir>/<service>-YYYYMMDD.log, a new file each day; the newest 31 are kept.
+# dir = "./logs"

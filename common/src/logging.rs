@@ -1,4 +1,10 @@
-use std::time::Instant;
+use std::{
+    fs::File,
+    io::{self, Write},
+    path::PathBuf,
+    sync::Mutex,
+    time::Instant,
+};
 
 use axum::{
     extract::{MatchedPath, Request},
@@ -6,6 +12,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use chrono::{Local, NaiveDate};
 use opentelemetry::{
     Context,
     propagation::{Extractor, TextMapPropagator},
@@ -19,7 +26,16 @@ use opentelemetry_sdk::{
 };
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::{EnvFilter, Layer, fmt::time::ChronoLocal, prelude::*};
+use tracing_subscriber::{
+    EnvFilter, Layer,
+    field::RecordFields,
+    fmt::{
+        FormatFields,
+        format::{DefaultFields, Writer},
+        time::ChronoLocal,
+    },
+    prelude::*,
+};
 
 use serde::Deserialize;
 
@@ -36,6 +52,8 @@ pub enum LogFormat {
 pub struct LogConfig {
     pub format: LogFormat,
     pub level: String,
+    /// When set, the log is also written to `<dir>/<service>-YYYYMMDD.log`, a new file each day.
+    pub dir: Option<PathBuf>,
 }
 
 impl Default for LogConfig {
@@ -43,7 +61,79 @@ impl Default for LogConfig {
         Self {
             format: LogFormat::Pretty,
             level: "debug".into(),
+            dir: None,
         }
+    }
+}
+
+/// Log files older than the newest this many are deleted; the same number Serilog keeps for auth-web.
+const KEEP_FILES: usize = 31;
+
+/// Appends to `<dir>/<service>-YYYYMMDD.log` by local date, moves to a new file when the date changes and
+/// then deletes all but the newest `KEEP_FILES`.
+struct DailyFile {
+    dir: PathBuf,
+    service: &'static str,
+    open: Option<(NaiveDate, File)>,
+}
+
+impl DailyFile {
+    fn write_on(&mut self, day: NaiveDate, buf: &[u8]) -> io::Result<()> {
+        if self.open.as_ref().is_none_or(|(d, _)| *d != day) {
+            std::fs::create_dir_all(&self.dir)?;
+            let name = format!("{}-{}.log", self.service, day.format("%Y%m%d"));
+            let file = File::options()
+                .create(true)
+                .append(true)
+                .open(self.dir.join(name))?;
+            self.open = Some((day, file));
+            self.prune();
+        }
+        self.open.as_mut().expect("opened above").1.write_all(buf)
+    }
+
+    /// Failing to delete an old file must not stop the logging, so errors are ignored.
+    fn prune(&self) {
+        let prefix = format!("{}-", self.service);
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut ours: Vec<PathBuf> = entries
+            .filter_map(|e| Some(e.ok()?.path()))
+            .filter(|p| {
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.strip_prefix(&prefix)
+                        .and_then(|rest| rest.strip_suffix(".log"))
+                        .is_some_and(|day| {
+                            day.len() == 8 && day.bytes().all(|b| b.is_ascii_digit())
+                        })
+                })
+            })
+            .collect();
+        ours.sort(); // the date in the name sorts as text
+        for old in ours.iter().rev().skip(KEEP_FILES) {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+}
+
+/// The console's field format as a type of its own. A span's fields are formatted once per formatter type
+/// and kept; sharing the console's type would put its colour codes into the file.
+struct PlainFields(DefaultFields);
+
+impl<'w> FormatFields<'w> for PlainFields {
+    fn format_fields<R: RecordFields>(&self, writer: Writer<'w>, fields: R) -> std::fmt::Result {
+        self.0.format_fields(writer, fields)
+    }
+}
+
+impl Write for DailyFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_on(Local::now().date_naive(), buf)
+            .map(|()| buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(()) // nothing is buffered here
     }
 }
 
@@ -80,9 +170,37 @@ where
         LogFormat::Pretty => fmt.boxed(),
         LogFormat::Json => fmt.json().boxed(),
     };
+    // The same lines again, without colours, in a file per day. A directory that cannot be written is
+    // reported once here; the service runs on with the console log alone.
+    let file = cfg.dir.clone().and_then(|dir| {
+        let mut out = DailyFile {
+            dir,
+            service,
+            open: None,
+        };
+        match out.write_on(Local::now().date_naive(), b"") {
+            Ok(()) => Some(out),
+            Err(e) => {
+                eprintln!("no log file in {}: {e}", out.dir.display());
+                None
+            }
+        }
+    });
+    let file = file.map(|out| {
+        let layer = tracing_subscriber::fmt::layer()
+            .with_timer(ChronoLocal::new(time.into()))
+            .with_ansi(false)
+            .fmt_fields(PlainFields(DefaultFields::new()))
+            .with_writer(Mutex::new(out));
+        match cfg.format {
+            LogFormat::Pretty => layer.boxed(),
+            LogFormat::Json => layer.json().boxed(),
+        }
+    });
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt)
+        .with(file)
         .with(otel_tracer(service).map(|t| tracing_opentelemetry::layer().with_tracer(t)))
         .init();
 }
@@ -193,7 +311,48 @@ pub async fn request_layer(req: Request, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::for_log;
+    use super::*;
+
+    #[test]
+    fn daily_file_starts_a_file_per_day_and_keeps_the_newest() {
+        let dir = std::env::temp_dir().join(format!("me-log-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 40 earlier days of this service, and files that are not its own
+        let day = |n: u64| NaiveDate::from_ymd_opt(2026, 1, 1).unwrap() + chrono::Days::new(n);
+        for n in 0..40 {
+            std::fs::write(
+                dir.join(format!("svc-{}.log", day(n).format("%Y%m%d"))),
+                "old",
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.join("svc-notes.log"), "keep").unwrap();
+        std::fs::write(dir.join("other-20260101.log"), "keep").unwrap();
+
+        let mut out = DailyFile {
+            dir: dir.clone(),
+            service: "svc",
+            open: None,
+        };
+        out.write_on(day(40), b"first\n").unwrap();
+        out.write_on(day(40), b"second\n").unwrap();
+        out.write_on(day(41), b"next day\n").unwrap();
+
+        let read =
+            |n| std::fs::read_to_string(dir.join(format!("svc-{}.log", day(n).format("%Y%m%d"))));
+        assert_eq!(read(40).unwrap(), "first\nsecond\n");
+        assert_eq!(read(41).unwrap(), "next day\n");
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.starts_with("svc-2"))
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), KEEP_FILES);
+        assert_eq!(names[0], format!("svc-{}.log", day(11).format("%Y%m%d")));
+        assert!(dir.join("svc-notes.log").exists() && dir.join("other-20260101.log").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn for_log_strips_control_characters_and_truncates() {

@@ -9,6 +9,9 @@ var env = File.ReadLines(Path.Combine(root, ".env"))
     .Where(l => !l.StartsWith('#') && l.Contains('='))
     .Select(l => l.Split('=', 2))
     .ToDictionary(p => p[0].Trim(), p => p[1].Trim());
+// Also log to ./logs, a file per day, as the run scripts do, unless .env names another directory.
+foreach (var name in new[] { "ME_AUTH__LOG__DIR", "ME_CALENDAR__LOG__DIR", "LOG_DIR" })
+    env.TryAdd(name, Path.Combine(root, "logs"));
 
 // Fixed ports and no Aspire proxy in front: the Caddyfile and the configurations name these addresses.
 var authService = WithDotEnv(builder

@@ -77,7 +77,7 @@ working development configuration; copy it to `config.local.toml` (git-ignored) 
 | `seed_username`  | Name of the admin created on the first start                                         |
 | `seed_email`     | Email address of that admin; default `<seed_username>@localhost`. Read only when the admin is created; it cannot be changed later |
 | `audience`       | The `aud` claim of access tokens; default `me-api`. Services that accept the tokens must expect the same value |
-| `[log]`          | `format` (`"pretty"` or `"json"`) and `level`                                        |
+| `[log]`          | `format` (`"pretty"` or `"json"`), `level`, and `dir` (see "Logging")                |
 | `[[clients]]`    | OAuth clients: `id`, `name`, `redirect_uris`                                         |
 | `[smtp]`         | Outgoing mail, see below                                                             |
 | `[providers.*]`  | Social sign-in, see below                                                            |
@@ -121,7 +121,7 @@ development configuration; copy it to `config.local.toml` (git-ignored) for real
 | `jwks_url`       | Where to fetch the signing keys; default `{issuer}/.well-known/jwks.json`            |
 | `audience`       | The `aud` claim that access tokens must carry; default `me-api`. Must equal `audience` of `auth-service` |
 | `service_secret` | Secret of internal callers; at least 16 characters. The value in the example file is refused unless `listen` is a loopback address |
-| `[log]`          | `format` (`"pretty"` or `"json"`) and `level`                                        |
+| `[log]`          | `format` (`"pretty"` or `"json"`), `level`, and `dir` (see "Logging")                |
 
 Any value can be overridden by an environment variable named `ME_CALENDAR__<KEY>`, with `__` for a
 nested table: `ME_CALENDAR__SERVICE_SECRET`, `ME_CALENDAR__DATA_DIR`,
@@ -431,6 +431,24 @@ All processes log to the console.
   loggers (`Microsoft.AspNetCore`, `System.Net.Http`), which are held at warning because below
   that they print request URLs, and those carry one-time tokens. One line per request is logged
   with the path only, never the query string.
+
+**Log files.** Each of the three can also write its log to a file per day, with the same lines as
+on the console and without colours: `auth-service-YYYYMMDD.log`, `calendar-service-YYYYMMDD.log`
+and `auth-web-YYYYMMDD.log`. A new file starts at local midnight and the newest 31 of each are
+kept. Nothing is written unless a directory is named:
+
+| Process            | Setting                                             |
+|--------------------|-----------------------------------------------------|
+| `auth-service`     | `[log] dir = "…"`, or `ME_AUTH__LOG__DIR`           |
+| `calendar-service` | `[log] dir = "…"`, or `ME_CALENDAR__LOG__DIR`       |
+| `auth-web`         | the environment variable `LOG_DIR`                  |
+
+The run scripts (`1-run-local-auth.sh`, `2-run-local-auth-web.sh`, `3-run-local-calendar.sh`) and
+the Aspire app host set all three to `logs/` in the repository root, unless `.env` names another
+directory. On Kubernetes nothing is set; read the logs with `kubectl logs`. A directory that cannot
+be written is reported once at start-up and the process runs on with the console log alone. Caddy
+is not covered. The files hold what the console shows, so on a first start that includes the
+seeded admin's one-time password (below); `logs/` is git-ignored.
 
 Timestamps in all processes are local time: `2026-10-04 09:28:15.303` on the console, and with
 the UTC offset in JSON lines (`2026-10-04T09:28:15.303+09:00`).
