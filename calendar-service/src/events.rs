@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode, header},
 };
 use chrono::{DateTime, Utc};
@@ -23,6 +23,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create_event))
         .routes(routes!(get_event, replace_event, delete_event))
+        .routes(routes!(list_changes))
 }
 
 // ---- types ----
@@ -87,6 +88,32 @@ pub struct Event {
     etag: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+/// The calendar's stored events changed since a sync token, as stored: series are not expanded.
+#[derive(Serialize, ToSchema)]
+pub struct Changes {
+    /// The calendar's current token; send it as `since` next time.
+    sync_token: i64,
+    events: Vec<Change>,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum Change {
+    Event(Box<Event>),
+    /// A deleted event: only what a client needs to drop it.
+    Deleted {
+        id: Uuid,
+        uid: String,
+        /// Always `true`.
+        deleted: bool,
+    },
+}
+
+#[derive(Deserialize)]
+struct ChangesQuery {
+    since: Option<String>,
 }
 
 // ---- errors ----
@@ -518,4 +545,101 @@ async fn delete_event(
     })?;
     tracing::info!(event = "event_deleted", user_id = %user, calendar_id = %calendar, event_id = %id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- changes feed ----
+
+/// The stored events of `calendar` with `revision > since` (tombstones included), or the live ones without
+/// `since`, by revision then id; with the calendar's token, read together.
+// ponytail: tombstones are kept forever; prune by age once a database grows
+fn changes_since(
+    c: &Connection,
+    user: Uuid,
+    calendar: Uuid,
+    since: Option<i64>,
+) -> rusqlite::Result<ApiResult<Changes>> {
+    let Some(cal) = calendars::owned(c, user, calendar)? else {
+        return Ok(Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such calendar",
+        )));
+    };
+    if since.is_some_and(|n| n > cal.sync_token) {
+        return Ok(Err(ApiError::new(
+            StatusCode::GONE,
+            "sync_token_invalid",
+            "since is beyond the calendar's sync token; list without since",
+        )));
+    }
+    let events = c
+        .prepare(&format!(
+            "SELECT {COLUMNS}, deleted FROM events WHERE calendar_id = ?1
+             AND calendar_id IN (SELECT id FROM calendars WHERE user_id = ?2)
+             AND ((?3 IS NULL AND deleted = 0) OR revision > ?3) ORDER BY revision, id"
+        ))?
+        .query_map(
+            params![calendar.to_string(), user.to_string(), since],
+            |r| {
+                let deleted: bool = r.get(18)?;
+                let ev = from_row(r)?;
+                Ok(if deleted {
+                    Change::Deleted {
+                        id: ev.id,
+                        uid: ev.uid,
+                        deleted,
+                    }
+                } else {
+                    Change::Event(Box::new(ev))
+                })
+            },
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(Ok(Changes {
+        sync_token: cal.sync_token,
+        events,
+    }))
+}
+
+/// List changes
+///
+/// Without `since`, the calendar's live events. With `since`, every stored event changed after that token,
+/// deleted ones as `{id, uid, deleted: true}`, by revision. Series and overrides are stored rows, not expanded.
+#[utoipa::path(
+    get, path = "/calendar/v1/calendars/{id}/changes",
+    tag = "events",
+    params(
+        ("id" = String, Path, description = "the calendar's UUID"),
+        ("since" = Option<i64>, Query, description = "a `sync_token` from an earlier answer, 0 or more"),
+        ("X-User-Id" = Option<Uuid>, Header, description = "The user to act for; required with `X-Service-Secret`"),
+    ),
+    security(("service_secret" = []), ("access_token" = [])),
+    responses(
+        (status = 200, description = "the changes and the calendar's current token", body = Changes),
+        (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+        (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
+        (status = 410, description = "`sync_token_invalid`: `since` is beyond the calendar's token; list without `since`", body = ErrorBody),
+        (status = 422, description = "`validation`: `since` is not a non-negative integer", body = ErrorBody),
+    )
+)]
+async fn list_changes(
+    State(s): State<AppState>,
+    Caller(user): Caller,
+    PathId(calendar): PathId,
+    query: Result<Query<ChangesQuery>, QueryRejection>,
+) -> ApiResult<Json<Changes>> {
+    let Query(q) = query.map_err(|_| invalid("the query string is malformed"))?;
+    let since = q
+        .since
+        .map(|v| {
+            let digits = !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
+            digits
+                .then(|| v.parse::<i64>().ok())
+                .flatten()
+                .ok_or_else(|| invalid("since must be a non-negative integer"))
+        })
+        .transpose()?;
+    Ok(Json(
+        s.db.with(|c| changes_since(c, user, calendar, since))??,
+    ))
 }

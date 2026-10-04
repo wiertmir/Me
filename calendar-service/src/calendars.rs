@@ -26,7 +26,7 @@ pub struct Calendar {
     /// `#rrggbb`
     color: String,
     /// Bumped by every change to the calendar's events; clients use it to detect changes.
-    sync_token: i64,
+    pub(crate) sync_token: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
