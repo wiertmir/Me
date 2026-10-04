@@ -18,7 +18,7 @@ use crate::{
     AppState, Caller, calendars,
     events::{COLUMNS, Event, from_row, invalid},
     recur,
-    time::{When, YEARS, parse_tz, parse_when},
+    time::{When, YEARS, parse_tz, parse_when, to_utc},
 };
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -198,11 +198,14 @@ impl<'a> Series<'a> {
         Ok(Some(s))
     }
 
-    /// A timed occurrence is as long as the series' own first one; an all-day one spans whole days.
+    /// The series' length on the wall clock: a timed occurrence ends at the same wall time whatever a DST
+    /// change does to the night between; an all-day one spans whole days.
     fn duration(&self) -> Duration {
         match (self.p.start, self.p.end) {
-            (When::Date(a), When::Date(b)) => Duration::days((b - a).num_days()),
-            _ => self.p.end.instant(self.zone) - self.p.start.instant(self.zone),
+            (When::Date(a), When::Date(b)) => b - a,
+            (When::Timed(a), When::Timed(b)) => b - a,
+            // `Parts` reads both in one form.
+            _ => Duration::zero(),
         }
     }
 
@@ -214,9 +217,9 @@ impl<'a> Series<'a> {
                 let e = When::Date(d + duration);
                 (e, e.instant(self.zone))
             }
-            When::Timed(_) => {
-                let e = start_utc + duration;
-                (When::Timed(e.with_timezone(&self.zone).naive_local()), e)
+            When::Timed(t) => {
+                let e = t + duration;
+                (When::Timed(e), to_utc(e, self.zone))
             }
         };
         occurrence(

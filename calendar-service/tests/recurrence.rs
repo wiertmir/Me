@@ -535,3 +535,49 @@ async fn far_range_is_refused() {
     .await;
     assert_eq!(s, 200, "{e}");
 }
+
+#[tokio::test]
+async fn nightly_series_keeps_its_wall_clock_end_across_dst() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app).await;
+    post(
+        &app,
+        &cal,
+        with(
+            timed("2027-03-25T22:00:00", "2027-03-26T06:00:00"),
+            json!({"rrule": "FREQ=DAILY"}),
+        ),
+    )
+    .await;
+    let got = occurrences(&app, &cal, "2027-03-26T12:00:00Z", "2027-03-30T12:00:00Z").await;
+    assert_eq!(got.len(), 4);
+    for o in &got {
+        assert!(o["start"].as_str().unwrap().ends_with("T22:00:00"), "{o}");
+        assert!(o["end"].as_str().unwrap().ends_with("T06:00:00"), "{o}");
+    }
+    assert_eq!(got[1]["start"], "2027-03-27T22:00:00");
+    assert_eq!(got[1]["start_utc"], "2027-03-27T21:00:00Z");
+    assert_eq!(got[1]["end_utc"], "2027-03-28T04:00:00Z");
+}
+
+#[tokio::test]
+async fn series_first_night_on_dst_keeps_wall_clock_end() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app).await;
+    post(
+        &app,
+        &cal,
+        with(
+            timed("2027-03-27T22:00:00", "2027-03-28T06:00:00"),
+            json!({"rrule": "FREQ=WEEKLY"}),
+        ),
+    )
+    .await;
+    let got = occurrences(&app, &cal, "2027-03-27T00:00:00Z", "2027-04-05T00:00:00Z").await;
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[0]["end"], "2027-03-28T06:00:00");
+    assert_eq!(got[0]["end_utc"], "2027-03-28T04:00:00Z");
+    assert_eq!(got[1]["start"], "2027-04-03T22:00:00");
+    assert_eq!(got[1]["end"], "2027-04-04T06:00:00");
+    assert_eq!(got[1]["end_utc"], "2027-04-04T04:00:00Z");
+}

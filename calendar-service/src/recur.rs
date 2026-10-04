@@ -6,7 +6,7 @@ use chrono_tz::Tz;
 use common::{ApiError, ApiResult};
 use rrule::{Frequency, RRule, RRuleSet};
 
-use crate::time::When;
+use crate::time::{When, to_utc};
 
 // The crate's own cap on a single query result.
 const CRATE_MAX: usize = u16::MAX as usize;
@@ -79,8 +79,10 @@ pub fn validate(rrule: &str, start: When, tz: Tz) -> ApiResult<()> {
 }
 
 /// Starts of the occurrences whose [start, start + duration) overlaps [from, to), in order, `exdates` removed.
-/// `tz` is the event's zone, or the query zone for an all-day series. More than `limit` results:
-/// Err 422 `too_many_occurrences`.
+/// `duration` is the series' length on the wall clock (whole days for an all-day series): an occurrence ends
+/// at its wall-clock start plus `duration`, read in `tz`, so a night across a DST change ends at the same
+/// wall time as any other. `tz` is the event's zone, or the query zone for an all-day series. More than
+/// `limit` results: Err 422 `too_many_occurrences`.
 #[allow(clippy::too_many_arguments)]
 pub fn starts(
     rrule: &str,
@@ -118,10 +120,10 @@ pub fn starts(
         })
         .filter(|w| !exdates.contains(w))
         .filter(|w| {
-            // A day ends at the next midnight in `tz`, which is not always 24 hours on.
+            // A day ends at the next midnight in `tz`, which is not always 24 hours on; nor is a night.
             let end = match w {
                 When::Date(d) => When::Date(*d + Duration::days(duration.num_days())).instant(tz),
-                When::Timed(_) => w.instant(tz) + duration,
+                When::Timed(t) => to_utc(*t + duration, tz),
             };
             w.instant(tz) < to && end > from
         })
@@ -259,6 +261,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(got, [t("2026-10-07T08:00:00")]);
+    }
+
+    #[test]
+    fn nightly_series_keeps_its_wall_clock_end_across_dst() {
+        // 22:00 to 06:00 on the wall: the night of 2027-03-27 is 7 hours long and over at 04:00Z
+        let run = |from, to| {
+            starts(
+                "FREQ=DAILY",
+                t("2027-03-25T22:00:00"),
+                Duration::hours(8),
+                &[],
+                W,
+                z(from),
+                z(to),
+                5000,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            run("2027-03-28T04:00:00", "2027-03-28T04:30:00"),
+            [] as [When; 0]
+        );
+        assert_eq!(
+            run("2027-03-28T03:30:00", "2027-03-28T04:00:00"),
+            [t("2027-03-27T22:00:00")]
+        );
     }
 
     #[test]
