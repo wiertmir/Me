@@ -228,6 +228,74 @@ dotnet AuthWeb.dll
 
 Run both under a process supervisor of your choice so that they restart; neither daemonises.
 
+## Running under .NET Aspire
+
+```sh
+dotnet run --project apphost
+```
+
+runs the home-network setup, the same three processes as the `N-run-*.sh` scripts (`auth-service`,
+`auth-web` in `Production`, Caddy), with the same `.env`, `auth-service/config.local.toml`,
+`Caddyfile` and data directories. Stop the scripts or the Kubernetes cluster first; they use the
+same ports. The console prints the login link of the Aspire dashboard
+(`http://localhost:15080/login?t=…`), which shows:
+
+- Resources: the three processes with their state, start/stop/restart and console logs, and under
+  Graph how they depend on each other (Caddy on both services, `auth-web` on `auth-service`);
+- Traces: every request as one trace across `auth-web` and `auth-service`.
+
+`auth-service` is started with `cargo run --release`; the others wait until its `/health` answers.
+
+Run `dotnet dev-certs https --trust` once on a new machine; without it the dashboard warns that no
+trusted development certificate was found. On Linux the app host's launch profile points
+`SSL_CERT_DIR` at the directory that command fills.
+
+## Tracing
+
+Both services export OpenTelemetry traces over OTLP (gRPC) when the standard variable
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set, as the Aspire app host does; without it nothing is collected.
+Any OTLP collector works: set the variable (and `OTEL_EXPORTER_OTLP_HEADERS` if it needs a key) for
+both processes.
+
+- `auth-web` records a span per request and per call to `auth-service`, and sends the trace context
+  along, so the service's span joins the same trace.
+- `auth-service` records a span per request, named by method and route template, with the request's
+  log events attached.
+- The rules for logs hold for traces: no query strings, and for calls to `auth-service` only the
+  origin, never the path, since both can carry one-time tokens.
+
+## Running on local Kubernetes
+
+`./run-kubernetes.sh` runs the same setup on a local [kind](https://kind.sigs.k8s.io) cluster named
+`me` (needs Docker, `kind` and `kubectl`). It builds the two images
+([`auth-service/Dockerfile`](auth-service/Dockerfile), [`auth-web/Dockerfile`](auth-web/Dockerfile)),
+loads them into the cluster and applies [`k8s/me.yaml`](k8s/me.yaml). Run it again after a code or
+configuration change.
+
+Both services and Caddy are the three containers of one pod. They share its network, so they talk
+over loopback as the plain processes do and only Caddy's ports 80 and 443 are published, on every
+address of the machine (Docker publishes them itself, past a host firewall such as `ufw`).
+
+A fourth container is the Aspire dashboard, to which both services send their traces:
+<http://localhost:18888>. It has no sign-in, so its port is published on this machine's loopback
+only, and it keeps traces in memory (they are gone when the pod restarts). It opens on the
+Structured logs page, which stays empty; the data is on the Traces page, once requests have been
+made. Sending telemetry to it needs a key that the script generates on every run.
+
+The script takes its settings from the files the plain processes use: `.env` (as the secret
+`me-env`), `auth-service/config.local.toml` and the `Caddyfile` (as the config map `me-config`). The
+data directories are the same ones too (`./data`, `auth-web/data/dp-keys`, Caddy's
+`~/.local/share/caddy`), mounted into the cluster and written as user id 1000. So accounts, sessions
+and the certificate carry over in both directions, and only one of the two ways can run at a time.
+
+```sh
+kubectl --context kind-me -n me logs deploy/auth -c auth-service -f    # or -c auth-web, -c caddy
+kubectl --context kind-me -n me exec deploy/auth -c auth-service -- \
+  auth-service /etc/me/config.toml reset-password wiertmir             # see "Locked out"
+docker stop me-control-plane          # stop (frees ports 80 and 443); `docker start` resumes
+kind delete cluster --name me         # remove the cluster; the data stays on the host
+```
+
 ## Backup
 
 Everything worth keeping is in two directories. Stop the process before copying its directory (a
@@ -283,10 +351,16 @@ service secret; do not expose `/api/*` publicly (the Caddyfile does not).
 
 Both processes log to the console.
 
-- `auth-service`: `[log] format = "pretty"` (default) or `"json"`, and `level`; or
-  `ME_AUTH__LOG__FORMAT=json`.
-- `auth-web`: set the environment variable `LOG_FORMAT=json` for JSON lines; anything else gives
-  the coloured console format.
+- `auth-service`: `[log] format = "pretty"` (default) or `"json"`, and `level` (default `debug`);
+  or `ME_AUTH__LOG__FORMAT=json`.
+- `auth-web` (Serilog): set the environment variable `LOG_FORMAT=json` for JSON lines; anything
+  else gives the coloured console format. The level is `debug`, except for the framework's own
+  loggers (`Microsoft.AspNetCore`, `System.Net.Http`), which are held at warning because below
+  that they print request URLs, and those carry one-time tokens. One line per request is logged
+  with the path only, never the query string.
+
+Timestamps in both processes are local time: `2026-10-04 09:28:15.303` on the console, and with
+the UTC offset in JSON lines (`2026-10-04T09:28:15.303+09:00`).
 
 Every request gets an `X-Request-Id`. `auth-web` creates it, or keeps the one that arrived with the
 request when it is well-formed (1 to 128 printable ASCII characters, no spaces) — from the proxy or

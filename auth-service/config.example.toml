@@ -20,7 +20,7 @@ seed_username = "wiertmir"
 
 [log]
 format = "pretty"        # "pretty" | "json"
-level = "info"
+level = "debug"
 
 [[clients]]
 id = "me-desktop"

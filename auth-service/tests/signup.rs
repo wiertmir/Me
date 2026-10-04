@@ -99,7 +99,7 @@ async fn signup_rejects_duplicates_and_bad_input() {
         ("bob", "nope", PW),
         ("bob", "a@b@example.com", PW),
         ("bob", "x@localhost", PW),
-        ("bob", "x@example.com", "elevenchars"),
+        ("bob", "x@example.com", "7chars!"),
     ] {
         assert_eq!(
             code(&signup(&app, u, e, p).await),

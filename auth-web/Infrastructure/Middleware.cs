@@ -1,10 +1,9 @@
 using AuthWeb.Services;
-using NLog;
 
 namespace AuthWeb.Infrastructure;
 
-/// <summary>One request id per HTTP request: logged (NLog scope), returned, and forwarded by the API handler.</summary>
-public sealed class RequestIdMiddleware(RequestDelegate next)
+/// <summary>One request id per HTTP request: logged (logging scope), returned, and forwarded by the API handler.</summary>
+public sealed class RequestIdMiddleware(RequestDelegate next, ILogger<RequestIdMiddleware> logger)
 {
     public async Task Invoke(HttpContext ctx)
     {
@@ -15,7 +14,9 @@ public sealed class RequestIdMiddleware(RequestDelegate next)
         ctx.Items[RequestContext.ItemKey] = id;
         // OnStarting: the exception handler clears the response before re-executing, eager headers would vanish.
         ctx.Response.OnStarting(() => { ctx.Response.Headers["X-Request-Id"] = id; return Task.CompletedTask; });
-        using (ScopeContext.PushProperty("RequestId", id))
+        // A logging scope, not Serilog's LogContext: the framework's own request scope also sets RequestId
+        // (to its connection id) and would win over the log context; the innermost scope wins over it.
+        using (logger.BeginScope(new Dictionary<string, object> { ["RequestId"] = id }))
         {
             await next(ctx);
         }

@@ -157,9 +157,9 @@ if [ "$CODE" = 302 ]; then req "$E" "$WEB$LOC"; fi
   && grep -q "Service unavailable" "$T/body" && ! grep -Eqi 'exception| at [A-Za-z]+\.|stack' "$T/body"
 check "8 service down: unavailable page, no 500, no stack trace" $? "$FIRST_CODE $FIRST_LOC -> $CODE"
 sleep 1
-N=$(grep -c '"level":"error"' "$T/web.log")
+N=$(grep -c '"Level":"Error"' "$T/web.log")
 [ "$N" = 1 ]; check "8b exactly one error line in the auth-web log" $? "$N lines"
-grep '"level":"error"' "$T/web.log" | grep -qi 'StackTrace\| at System\.'; [ $? -ne 0 ]; check "8c error line has no stack trace" $?
+grep '"Level":"Error"' "$T/web.log" | grep -qi 'StackTrace\| at System\.'; [ $? -ne 0 ]; check "8c error line has no stack trace" $?
 # non-JSON 502 from the service (proxy error page) must show the unavailable page, not a 500
 setsid python3 - <<'PY' &
 import http.server
@@ -223,8 +223,8 @@ form_post "$H" "$WEB/signup" signup $(SIGNUP_FIELDS alice other@example.test "$P
 [ "$CODE" = 200 ] && grep -q "That username or email is already in use" "$T/body"; check "S2a duplicate username: 200 with the conflict message" $? "$CODE"
 form_post "$H" "$WEB/signup" signup $(SIGNUP_FIELDS carol carol@example.test "$PW1" "$PW2")
 [ "$CODE" = 200 ] && grep -q "passwords do not match" "$T/body"; check "S2b mismatched confirm: message" $? "$CODE"
-form_post "$H" "$WEB/signup" signup $(SIGNUP_FIELDS carol carol@example.test "elevenchars")
-[ "$CODE" = 200 ] && grep -q 'id="password-error"[^>]*>[^<]*at least 12' "$T/body"; check "S2c 11-character password: message under the password field" $? "$CODE"
+form_post "$H" "$WEB/signup" signup $(SIGNUP_FIELDS carol carol@example.test "7chars!")
+[ "$CODE" = 200 ] && grep -q 'id="password-error"[^>]*>[^<]*at least 8' "$T/body"; check "S2c 7-character password: message under the password field" $? "$CODE"
 req "$G" "$WEB/signup"
 [ "$CODE" = 302 ] && [ "$LOC" = "/account" ]; check "S2d signed-in user visiting /signup is sent to /account" $? "$CODE $LOC"
 
@@ -271,7 +271,7 @@ RTOK=$(mail_token reset); [ -n "$RTOK" ]; check "S4d reset link found in the mai
 req "$E" "$WEB/reset?token=$RTOK"
 [ "$CODE" = 200 ] && grep -q 'name="Input.New"' "$T/body"; check "S4e reset link shows the form" $? "$CODE"
 form_post "$E" "$WEB/reset?token=$RTOK" reset --data-urlencode "Input.Token=$RTOK" --data-urlencode "Input.New=short" --data-urlencode "Input.Confirm=short"
-[ "$CODE" = 200 ] && grep -q 'id="new-error"[^>]*>[^<]*at least 12' "$T/body"; check "S4f weak password: message under the field" $? "$CODE"
+[ "$CODE" = 200 ] && grep -q 'id="new-error"[^>]*>[^<]*at least 8' "$T/body"; check "S4f weak password: message under the field" $? "$CODE"
 form_post "$E" "$WEB/reset?token=$RTOK" reset --data-urlencode "Input.Token=$RTOK" --data-urlencode "Input.New=$PW2" --data-urlencode "Input.Confirm=$PW2"
 [ "$CODE" = 302 ] && [ "$LOC" = "/signin?notice=reset" ]; check "S4g token survived the weak attempt; good password redirects to /signin?notice=reset" $? "$CODE $LOC"
 req "$E" "$WEB/signin?notice=reset"
