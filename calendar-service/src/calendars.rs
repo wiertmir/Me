@@ -116,6 +116,7 @@ fn insert(c: &Connection, user: Uuid, name: &str, color: &str) -> rusqlite::Resu
     responses(
     (status = 200, description = "the calendars", body = Vec<Calendar>),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
 )
 )]
 async fn list_calendars(
@@ -150,6 +151,7 @@ async fn list_calendars(
     responses(
     (status = 201, description = "created", body = Calendar),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 409, description = "`conflict`: 100 calendars already exist", body = ErrorBody),
     (status = 422, description = "`validation`: malformed body, name not 1 to 100 characters, or color not `#rrggbb`", body = ErrorBody),
 )
@@ -197,6 +199,7 @@ async fn create_calendar(
     responses(
     (status = 200, description = "the calendar", body = Calendar),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
 )
 )]
@@ -225,6 +228,7 @@ async fn get_calendar(
     responses(
     (status = 200, description = "the updated calendar", body = Calendar),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
     (status = 422, description = "`validation`: malformed body, name not 1 to 100 characters, or color not `#rrggbb`", body = ErrorBody),
 )
@@ -268,6 +272,7 @@ async fn patch_calendar(
     responses(
     (status = 204, description = "deleted"),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
 )
 )]

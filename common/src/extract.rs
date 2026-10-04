@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::ApiError;
 
-/// `Json<T>` for `/api/*` request bodies. Malformed JSON, wrong field types, missing fields and a wrong
-/// content type are all 422 `validation`; the message never echoes the body.
+/// `Json<T>` for the request bodies of every service's API. Malformed JSON, wrong field types, missing
+/// fields and a wrong content type are all 422 `validation`; the message never echoes the body.
 pub struct ApiJson<T>(pub T);
 
 impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for ApiJson<T> {

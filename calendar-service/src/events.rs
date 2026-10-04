@@ -86,11 +86,15 @@ pub struct Event {
     pub(crate) all_day: bool,
     pub(crate) start: String,
     pub(crate) end: String,
+    #[schema(required)]
     pub(crate) tz: Option<String>,
+    #[schema(required)]
     pub(crate) rrule: Option<String>,
     pub(crate) exdates: Vec<String>,
     reminders: Vec<u32>,
+    #[schema(required)]
     pub(crate) recurring_event_id: Option<Uuid>,
+    #[schema(required)]
     pub(crate) original_start: Option<String>,
     /// The quoted revision, as sent in the `ETag` header; send it back in `If-Match`.
     etag: String,
@@ -358,8 +362,10 @@ const ID_PARAMS: &str = "UUID";
         "start": "2026-10-05T09:00:00", "end": "2026-10-05T10:00:00", "tz": "Europe/Warsaw", "reminders": [10]})),
     security(("service_secret" = []), ("access_token" = [])),
     responses(
-    (status = 201, description = "created; `ETag` header carries the etag", body = Event),
+    (status = 201, description = "created; `ETag` header carries the etag", body = Event,
+        headers(("ETag" = String, description = "The event's etag, as in the body"))),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
     (status = 409, description = "`conflict`: the uid is in use, the occurrence already has an override, or the calendar already holds 10,000 events or 1,000 repeating ones", body = ErrorBody),
     (status = 422, description = "`validation`: malformed body, a limit exceeded, bad times or zone, bad rrule, or bad override", body = ErrorBody),
@@ -459,8 +465,10 @@ async fn create_event(
     ),
     security(("service_secret" = []), ("access_token" = [])),
     responses(
-    (status = 200, description = "the event", body = Event),
+    (status = 200, description = "the event", body = Event,
+        headers(("ETag" = String, description = "The event's etag, as in the body"))),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, deleted, or not the caller's", body = ErrorBody),
 )
 )]
@@ -488,8 +496,10 @@ async fn get_event(
     request_body = EventInput,
     security(("service_secret" = []), ("access_token" = [])),
     responses(
-    (status = 200, description = "the replaced event; `ETag` header carries the new etag", body = Event),
+    (status = 200, description = "the replaced event; `ETag` header carries the new etag", body = Event,
+        headers(("ETag" = String, description = "The event's etag, as in the body"))),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, deleted, or not the caller's", body = ErrorBody),
     (status = 409, description = "`conflict`: the event would become a repeating one and the calendar already holds 1,000", body = ErrorBody),
     (status = 412, description = "`etag_mismatch`: `If-Match` is not the current etag", body = ErrorBody),
@@ -566,6 +576,7 @@ async fn replace_event(
     responses(
     (status = 204, description = "deleted"),
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, already deleted, or not the caller's", body = ErrorBody),
     (status = 412, description = "`etag_mismatch`: `If-Match` is not the current etag", body = ErrorBody),
 )
@@ -669,6 +680,7 @@ fn changes_since(
     responses(
         (status = 200, description = "the changes and the calendar's current token", body = Changes),
         (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+        (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
         (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
         (status = 410, description = "`sync_token_invalid`: `since` is beyond the calendar's token; list without `since`", body = ErrorBody),
         (status = 422, description = "`validation`: `since` is not a non-negative integer", body = ErrorBody),

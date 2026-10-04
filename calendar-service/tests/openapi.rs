@@ -62,6 +62,65 @@ async fn every_route_is_documented() {
 }
 
 #[tokio::test]
+async fn calendar_operations_take_both_credentials() {
+    let app = TestApp::spawn().await;
+    let doc = doc(&app).await;
+    let mut seen = 0;
+    for (path, item) in doc["paths"].as_object().unwrap() {
+        for m in METHODS {
+            let Some(op) = item.get(m).filter(|_| path.starts_with("/calendar/v1")) else {
+                continue;
+            };
+            seen += 1;
+            let schemes: BTreeSet<&str> = op["security"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|req| req.as_object().unwrap().keys())
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                schemes,
+                BTreeSet::from(["access_token", "service_secret"]),
+                "{m} {path}"
+            );
+            // a bearer token is checked against keys that may be unreachable
+            assert!(op["responses"]["503"].is_object(), "{m} {path}");
+        }
+    }
+    assert_eq!(seen, ROUTES.len() - 1);
+}
+
+#[tokio::test]
+async fn event_schema_and_headers() {
+    let app = TestApp::spawn().await;
+    let doc = doc(&app).await;
+    assert!(
+        doc["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "events")
+    );
+    let required = doc["components"]["schemas"]["Event"]["required"]
+        .as_array()
+        .unwrap();
+    for f in ["tz", "rrule", "recurring_event_id", "original_start"] {
+        assert!(required.iter().any(|r| r == f), "{f}");
+        let ty = &doc["components"]["schemas"]["Event"]["properties"][f]["type"];
+        assert!(ty.as_array().unwrap().iter().any(|t| t == "null"), "{f}");
+    }
+    for (m, path, status) in [
+        ("post", "/calendar/v1/calendars/{id}/events", "201"),
+        ("get", "/calendar/v1/events/{id}", "200"),
+        ("put", "/calendar/v1/events/{id}", "200"),
+    ] {
+        let r = &doc["paths"][path][m]["responses"][status];
+        assert!(r["headers"]["ETag"].is_object(), "{m} {path}");
+    }
+}
+
+#[tokio::test]
 async fn document_metadata() {
     let app = TestApp::spawn().await;
     let doc = doc(&app).await;

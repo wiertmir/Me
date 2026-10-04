@@ -15,6 +15,7 @@ use utoipa::{
     ),
     tags(
         (name = "calendars", description = "The user's calendars"),
+        (name = "events", description = "Events, recurring series and their occurrences, and the changes feed"),
     ),
     modifiers(&SecuritySchemes),
 )]

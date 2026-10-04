@@ -360,6 +360,7 @@ fn parse_range(
     responses(
         (status = 200, description = "occurrences overlapping [from, to), by start then id", body = Vec<Occurrence>),
         (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+        (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
         (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
         (status = 422, description = "`validation`: bad or missing `from`, `to` or `tz`, or a range over 366 days; `too_many_occurrences`: more than 5,000", body = ErrorBody),
     )
