@@ -1,7 +1,7 @@
 # Me — Calendar service: design
 
 Date: 2026-10-04
-Status: approved
+Status: implemented
 
 ## Context
 
@@ -147,7 +147,7 @@ The service keeps no user table. It trusts the user id it is given.
 | `original_start`     | Set on an override: the start of the occurrence it replaces |
 | `revision`           | The calendar's `sync_token` value at this event's last write |
 | `deleted`            | Tombstone flag |
-| `start_utc`, `end_utc` | Derived instants, for range queries. For a series, `end_utc` is the end of its last occurrence, or null when it never ends |
+| `start_utc`, `end_utc` | Derived instants, for range queries. For a series, `end_utc` is null |
 | `created_at`, `updated_at` | |
 
 `(recurring_event_id, original_start)` is unique.

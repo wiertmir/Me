@@ -1,4 +1,4 @@
-# One public origin for both processes (see README, "Deployment behind Caddy").
+# One public origin for the services (see README, "Deployment behind Caddy").
 # `localhost` works as is for a local try-out: Caddy issues a certificate from its own local CA.
 # For a real deployment set ME_HOST to the hostname, e.g. `ME_HOST=me.example.com caddy run`.
 {$ME_HOST:localhost} {
@@ -19,7 +19,16 @@
 		reverse_proxy 127.0.0.1:8081
 	}
 
-	# auth-service's /api/* is the internal API (guarded only by the shared service secret) and its
+	# calendar-service: the public API. The two headers are how internal callers identify themselves,
+	# so a client must not be able to send them.
+	handle /calendar/* {
+		reverse_proxy 127.0.0.1:8083 {
+			header_up -X-Service-Secret
+			header_up -X-User-Id
+		}
+	}
+
+	# The services' /api/* is the internal API (guarded only by the shared service secret) and its
 	# documentation page. It is never proxied; auth-web has no /api/ routes either, so answer here.
 	handle /api/* {
 		respond 404

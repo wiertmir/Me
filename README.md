@@ -6,7 +6,7 @@ A personal suite of self-hosted services with a desktop client.
 |--------------------|---------------------------------------------------------|-----------------------|----------|
 | `auth-service`     | Users, sign-in, OAuth 2 / OpenID Connect tokens          | Rust                  | working  |
 | `auth-web`         | Web app for sign-in, sign-up and account management      | .NET Blazor Server    | working  |
-| `calendar-service` | Calendar REST API                                        | Rust                  | planned  |
+| `calendar-service` | Calendar REST API                                        | Rust                  | working  |
 | `tasks-service`    | Tasks REST API                                           | Rust                  | planned  |
 | `caldav-bridge`    | CalDAV front-end over the calendar and tasks services    | Rust                  | planned  |
 | `client`           | Desktop app: calendar, tasks, Gmail/Hotmail/Yahoo mail   | Rust + Slint          | planned  |
@@ -21,10 +21,13 @@ Design documents live in [`docs/superpowers/specs`](docs/superpowers/specs).
 - `auth-web/` — the web interface: sign-in, sign-up, email verification, password reset, the account
   pages (profile, security, app passwords) and the admin page for users. It holds no data of its own
   and calls `auth-service` for everything.
+- `calendar-service/` — the calendar API: calendars and events (with recurrence) per user, a range
+  query that expands recurring events, and a changes feed. It stores everything in SQLite under its
+  data directory and accepts the access tokens of `auth-service`.
 - `common/` — Rust code shared with later services (API errors, token verification).
 - `auth-web.Tests/` — component tests for `auth-web`.
 - `scripts/` — end-to-end checks.
-- `Caddyfile` — reverse-proxy configuration that puts both processes on one origin.
+- `Caddyfile` — reverse-proxy configuration that puts the processes on one origin.
 
 ## Prerequisites
 
@@ -40,10 +43,12 @@ Run each command from the repository root, in its own terminal:
 ```sh
 cargo run -p auth-service -- auth-service/config.example.toml
 dotnet run --project auth-web
+cargo run -p calendar-service -- calendar-service/config.example.toml   # optional
 ```
 
 - `auth-web` (open this one): <http://localhost:5080>
 - `auth-service`: <http://localhost:8081> (API documentation at <http://localhost:8081/api/docs>)
+- `calendar-service`: <http://localhost:8083> (API documentation at <http://localhost:8083/api/docs>)
 
 On its first start with an empty data directory the service creates the admin user `wiertmir` and
 writes a warning line to its console that contains `one_time_password=…`. Sign in with that
@@ -102,6 +107,40 @@ password = "…"
 
 `tls = "none"` sends mail unencrypted. It exists for a local mail catcher during testing only.
 
+### calendar-service
+
+The service reads the TOML file named as its first argument, like `auth-service`.
+[`calendar-service/config.example.toml`](calendar-service/config.example.toml) is a working
+development configuration; copy it to `config.local.toml` (git-ignored) for real use.
+
+| Key              | Meaning                                                                              |
+|------------------|--------------------------------------------------------------------------------------|
+| `listen`         | Address and port to listen on; `127.0.0.1:8083`                                      |
+| `data_dir`       | Directory for the database (`calendar.db`)                                           |
+| `issuer`         | The `iss` claim of the access tokens it accepts: the public URL of `auth-service`    |
+| `jwks_url`       | Where to fetch the signing keys; default `{issuer}/.well-known/jwks.json`            |
+| `audience`       | The `aud` claim that access tokens must carry; default `me-api`. Must equal `audience` of `auth-service` |
+| `service_secret` | Secret of internal callers; at least 16 characters. The value in the example file is refused unless `listen` is a loopback address |
+| `[log]`          | `format` (`"pretty"` or `"json"`) and `level`                                        |
+
+Any value can be overridden by an environment variable named `ME_CALENDAR__<KEY>`, with `__` for a
+nested table: `ME_CALENDAR__SERVICE_SECRET`, `ME_CALENDAR__DATA_DIR`, `ME_CALENDAR__LOG__FORMAT=json`.
+
+The API is under `/calendar/v1`. A caller sends either a bearer access token from `auth-service`, or
+(internal callers only, such as the planned CalDAV bridge) the headers `X-Service-Secret` and
+`X-User-Id`. The service secret may be the same value as `auth-service`'s or a different one; only
+internal callers use it. Caddy removes those two headers from requests on the public route.
+
+For the home-network setup (the scripts, the app host and Kubernetes) do this once before the first
+start of `calendar-service`:
+
+- add `ME_CALENDAR__SERVICE_SECRET=<a secret>` to `.env`;
+- copy `calendar-service/config.example.toml` to `calendar-service/config.local.toml`, set `issuer`
+  to the public origin (as for `auth-service`) and add
+  `jwks_url = "http://127.0.0.1:8081/.well-known/jwks.json"`. The service then fetches the keys from
+  `auth-service` directly, not through the proxy and its certificate. Keep `data_dir = "./data"`
+  (the example's value), beside `auth.db`.
+
 ### auth-web
 
 Settings are in [`auth-web/appsettings.json`](auth-web/appsettings.json); each can be set by an
@@ -157,12 +196,13 @@ An account created through a provider has no password. It can set one on the Sec
 
 ## Deployment behind Caddy
 
-The [`Caddyfile`](Caddyfile) serves both processes on one origin and provides TLS:
+The [`Caddyfile`](Caddyfile) serves the processes on one origin and provides TLS:
 
 | Path                                      | Goes to                          |
 |-------------------------------------------|----------------------------------|
 | `/social/complete`                        | auth-web (`127.0.0.1:5080`)      |
 | `/oauth/*`, `/.well-known/*`, `/social/*` | auth-service (`127.0.0.1:8081`)  |
+| `/calendar/*`                             | calendar-service (`127.0.0.1:8083`) |
 | `/api/*`                                  | nothing: answered with 404       |
 | everything else                           | auth-web (`127.0.0.1:5080`)      |
 
@@ -177,7 +217,7 @@ These settings must all be that single public origin (for example `https://me.ex
 
 `AuthService:BaseUrl` stays the internal address (`http://127.0.0.1:8081`). `auth-web` learns the
 client address and the HTTPS scheme from the proxy's `X-Forwarded-For` and `X-Forwarded-Proto`
-headers, which it trusts only from a proxy on the same machine (loopback). Keep both processes
+headers, which it trusts only from a proxy on the same machine (loopback). Keep all the processes
 listening on `127.0.0.1` so that nothing reaches them except through the proxy.
 
 **Access logs.** The Caddyfile does not switch on Caddy's access log. If you enable one (in Caddy
@@ -234,14 +274,15 @@ Run both under a process supervisor of your choice so that they restart; neither
 dotnet run --project apphost
 ```
 
-runs the home-network setup, the same three processes as the `N-run-*.sh` scripts (`auth-service`,
-`auth-web` in `Production`, Caddy), with the same `.env`, `auth-service/config.local.toml`,
-`Caddyfile` and data directories. Stop the scripts or the Kubernetes cluster first; they use the
+runs the home-network setup, the same four processes as the `N-run-*.sh` scripts (`auth-service`,
+`calendar-service`, `auth-web` in `Production`, Caddy), with the same `.env`,
+`auth-service/config.local.toml`, `calendar-service/config.local.toml`, `Caddyfile` and data directories. Stop the scripts or the Kubernetes cluster first; they use the
 same ports. The console prints the login link of the Aspire dashboard
 (`http://localhost:15080/login?t=…`), which shows:
 
-- Resources: the three processes with their state, start/stop/restart and console logs, and under
-  Graph how they depend on each other (Caddy on both services, `auth-web` on `auth-service`);
+- Resources: the four processes with their state, start/stop/restart and console logs, and under
+  Graph how they depend on each other (Caddy on all three, `auth-web` and `calendar-service` on
+  `auth-service`);
 - Traces: every request as one trace across `auth-web` and `auth-service`.
 
 `auth-service` is started with `cargo run --release`; the others wait until its `/health` answers.
@@ -252,10 +293,10 @@ trusted development certificate was found. On Linux the app host's launch profil
 
 ## Tracing
 
-Both services export OpenTelemetry traces over OTLP (gRPC) when the standard variable
+The services export OpenTelemetry traces over OTLP (gRPC) when the standard variable
 `OTEL_EXPORTER_OTLP_ENDPOINT` is set, as the Aspire app host does; without it nothing is collected.
 Any OTLP collector works: set the variable (and `OTEL_EXPORTER_OTLP_HEADERS` if it needs a key) for
-both processes.
+every process.
 
 - `auth-web` records a span per request and per call to `auth-service`, and sends the trace context
   along, so the service's span joins the same trace.
@@ -267,29 +308,30 @@ both processes.
 ## Running on local Kubernetes
 
 `./run-kubernetes.sh` runs the same setup on a local [kind](https://kind.sigs.k8s.io) cluster named
-`me` (needs Docker, `kind` and `kubectl`). It builds the two images
-([`auth-service/Dockerfile`](auth-service/Dockerfile), [`auth-web/Dockerfile`](auth-web/Dockerfile)),
+`me` (needs Docker, `kind` and `kubectl`). It builds the three images
+([`auth-service/Dockerfile`](auth-service/Dockerfile),
+[`calendar-service/Dockerfile`](calendar-service/Dockerfile), [`auth-web/Dockerfile`](auth-web/Dockerfile)),
 loads them into the cluster and applies [`k8s/me.yaml`](k8s/me.yaml). Run it again after a code or
 configuration change.
 
-Both services and Caddy are the three containers of one pod. They share its network, so they talk
+The three services and Caddy are four containers of one pod. They share its network, so they talk
 over loopback as the plain processes do and only Caddy's ports 80 and 443 are published, on every
 address of the machine (Docker publishes them itself, past a host firewall such as `ufw`).
 
-A fourth container is the Aspire dashboard, to which both services send their traces:
+A fifth container is the Aspire dashboard, to which the services send their traces:
 <http://localhost:18888>. It has no sign-in, so its port is published on this machine's loopback
 only, and it keeps traces in memory (they are gone when the pod restarts). It opens on the
 Structured logs page, which stays empty; the data is on the Traces page, once requests have been
 made. Sending telemetry to it needs a key that the script generates on every run.
 
 The script takes its settings from the files the plain processes use: `.env` (as the secret
-`me-env`), `auth-service/config.local.toml` and the `Caddyfile` (as the config map `me-config`). The
+`me-env`), `auth-service/config.local.toml`, `calendar-service/config.local.toml` and the `Caddyfile` (as the config map `me-config`). The
 data directories are the same ones too (`./data`, `auth-web/data/dp-keys`, Caddy's
 `~/.local/share/caddy`), mounted into the cluster and written as user id 1000. So accounts, sessions
 and the certificate carry over in both directions, and only one of the two ways can run at a time.
 
 ```sh
-kubectl --context kind-me -n me logs deploy/auth -c auth-service -f    # or -c auth-web, -c caddy
+kubectl --context kind-me -n me logs deploy/auth -c auth-service -f    # or -c calendar-service, -c auth-web, -c caddy
 kubectl --context kind-me -n me exec deploy/auth -c auth-service -- \
   auth-service /etc/me/config.toml reset-password wiertmir             # see "Locked out"
 docker stop me-control-plane          # stop (frees ports 80 and 443); `docker start` resumes
@@ -304,6 +346,7 @@ copy of a database that is being written to can be inconsistent).
 | What                                      | Where                                   | If it is lost |
 |-------------------------------------------|-----------------------------------------|---------------|
 | Database                                  | `<data_dir>/auth.db` (with `auth.db-wal` and `auth.db-shm` when present) | Every account, linked sign-in method, session and app password is gone. On the next start the service creates an empty database and seeds a new admin |
+| Calendars and events                      | `<data_dir>/calendar.db` (with `calendar.db-wal` and `calendar.db-shm` when present) | Every calendar and event is gone. On the next start the service creates an empty database |
 | Token signing key                         | `<data_dir>/signing.key`                | The service creates a new key on the next start. Access and ID tokens issued before stop verifying; apps get new ones at their next refresh (refresh tokens live in the database), and services that verify tokens fetch the new public key by themselves |
 | Cookie-encryption keys of `auth-web`      | the `DataProtection:Path` directory      | New keys are created. Every browser has to sign in again, and a form that was open at the time has to be reloaded. No account data is affected |
 
@@ -313,11 +356,11 @@ original.
 
 ## Upgrading
 
-There are no database migrations yet. The service creates missing tables at start-up and never
+There are no database migrations yet. Each service creates missing tables at start-up and never
 alters an existing one, so a new version whose schema differs from the one that created your
 database will not work with it. Until migrations exist, such a version needs a fresh database:
-stop the service, move `auth.db` away and start again, which means every account has to be created
-again. Versions that do not change the schema can be swapped in place. Keep a backup before any
+stop the service, move its database (`auth.db` or `calendar.db`) away and start again, which means
+every account (or every calendar and event) has to be created again. Versions that do not change the schema can be swapped in place. Keep a backup before any
 upgrade.
 
 ## Locked out
@@ -342,17 +385,19 @@ simpler to stop the service, delete the data directory and start again.
 
 ## API documentation
 
-The service describes its API at `/api/docs` (a browsable page) and `/api/openapi.json`, on its
-internal address: <http://127.0.0.1:8081/api/docs>. The page loads its viewer script from a public
-CDN (`cdn.jsdelivr.net`), so it needs internet access in the browser. Neither endpoint asks for the
-service secret; do not expose `/api/*` publicly (the Caddyfile does not).
+Each service describes its API at `/api/docs` (a browsable page) and `/api/openapi.json`, on its
+internal address: <http://127.0.0.1:8081/api/docs> for `auth-service`,
+<http://127.0.0.1:8083/api/docs> for `calendar-service`. The page loads its viewer script from a public
+CDN (`cdn.jsdelivr.net`), so it needs internet access in the browser. Neither endpoint asks for a
+secret; do not expose `/api/*` publicly (the Caddyfile does not).
 
 ## Logging
 
-Both processes log to the console.
+All processes log to the console.
 
 - `auth-service`: `[log] format = "pretty"` (default) or `"json"`, and `level` (default `debug`);
   or `ME_AUTH__LOG__FORMAT=json`.
+- `calendar-service`: the same keys under `[log]`; `ME_CALENDAR__LOG__FORMAT=json`.
 - `auth-web` (Serilog): set the environment variable `LOG_FORMAT=json` for JSON lines; anything
   else gives the coloured console format. The level is `debug`, except for the framework's own
   loggers (`Microsoft.AspNetCore`, `System.Net.Http`), which are held at warning because below
