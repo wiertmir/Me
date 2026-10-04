@@ -460,8 +460,8 @@ each of its log lines and sends it with its API calls; the service logs the same
 therefore finds a user action in both logs. `calendar-service` does the same for the requests it
 receives: it keeps a well-formed id or creates one, and writes it on its log lines.
 
-A request that is refused (any 4xx or 5xx with the `{code, message}` shape) is logged at debug with
-that code and message, inside the request's line group, so the log alone says why.
+A request that is refused (any 4xx or 5xx with the `{code, message}` shape) is logged as a warning
+with that code and message, inside the request's line group, so the log alone says why.
 
 Secrets are never logged, with one exception: the one-time password of the seeded admin. (The
 `reset-password` command prints its one-time password to standard output, not to the log.) A login
