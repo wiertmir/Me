@@ -132,7 +132,10 @@ The API is under `/calendar/v1`. A caller sends either a bearer access token fro
 internal callers use it. Caddy removes those two headers from requests on the public route.
 
 For the home-network setup (the scripts, the app host and Kubernetes) do this once before the first
-start of `calendar-service`:
+start of `calendar-service`. The scripts `1-run-local-auth.sh`, `2-run-local-auth-web.sh`,
+`3-run-caddy.sh` and `4-run-local-calendar.sh` start the four processes of that setup, each in its
+own terminal (`4-run-local-calendar.sh` runs `calendar-service`, like `1-run-local-auth.sh` runs
+`auth-service`):
 
 - add `ME_CALENDAR__SERVICE_SECRET=<a secret>` to `.env`;
 - copy `calendar-service/config.example.toml` to `calendar-service/config.local.toml`, set `issuer`
