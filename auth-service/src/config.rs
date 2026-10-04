@@ -33,7 +33,7 @@ impl Default for LogConfig {
     fn default() -> Self {
         Self {
             format: LogFormat::Pretty,
-            level: "info".into(),
+            level: "debug".into(),
         }
     }
 }

@@ -115,7 +115,7 @@ pub(crate) fn valid_email(e: &str) -> bool {
     (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
     (status = 403, description = "`signup_disabled`: self sign-up is switched off", body = ErrorBody),
     (status = 409, description = "`conflict`: username or email already in use", body = ErrorBody),
-    (status = 422, description = "`validation`: malformed body, invalid username (3-32 of a-z 0-9 . _ -), invalid email, password shorter than 12 characters or longer than 1024 bytes, or display name over 100 characters", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, invalid username (3-32 of a-z 0-9 . _ -), invalid email, password shorter than 8 characters or longer than 1024 bytes, or display name over 100 characters", body = ErrorBody),
 )
 )]
 async fn signup(
@@ -341,7 +341,7 @@ struct ResetRequest {
     (status = 204, description = "password changed"),
     (status = 400, description = "`invalid_token`: unknown, expired or already used token", body = ErrorBody),
     (status = 401, description = "`unauthorized`: missing or wrong `X-Service-Secret`", body = ErrorBody),
-    (status = 422, description = "`validation`: malformed body, new password shorter than 12 characters or longer than 1024 bytes", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, new password shorter than 8 characters or longer than 1024 bytes", body = ErrorBody),
 )
 )]
 async fn reset_password(

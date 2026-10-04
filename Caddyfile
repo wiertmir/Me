@@ -1,7 +1,7 @@
 # One public origin for both processes (see README, "Deployment behind Caddy").
 # `localhost` works as is for a local try-out: Caddy issues a certificate from its own local CA.
-# For a real deployment replace `localhost` with the public hostname, e.g. `me.example.com`.
-localhost {
+# For a real deployment set ME_HOST to the hostname, e.g. `ME_HOST=me.example.com caddy run`.
+{$ME_HOST:localhost} {
 	# auth-web's own page that finishes a social sign-in. It lives under /social/, so it is
 	# listed before the /social/* rule that sends everything else there to auth-service.
 	handle /social/complete {

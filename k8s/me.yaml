@@ -1,0 +1,97 @@
+# auth-service, auth-web and Caddy as one pod. The containers share a network namespace, so they
+# reach each other on loopback exactly as the plain processes do: both services stay on 127.0.0.1 and
+# auth-web keeps trusting the proxy's forwarded headers. Only Caddy's 80/443 leave the pod, plus the
+# Aspire dashboard (traces of both services), which the cluster publishes on this machine's loopback only.
+#
+# Created by run-kubernetes.sh, which also supplies:
+#   secret me-env        the repository's .env (service secret, host name, auth-web settings) plus TZ
+#                        and OTLP_KEY, a key for the dashboard that is new on every run
+#   configmap me-config  auth-service/config.local.toml and the Caddyfile
+#   /me/* on the node    the same data directories the plain processes use
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: me
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth
+  namespace: me
+spec:
+  replicas: 1          # SQLite and an in-memory rate limiter: one instance only
+  strategy:
+    type: Recreate     # never two pods on the same database
+  selector:
+    matchLabels: {app: auth}
+  template:
+    metadata:
+      labels: {app: auth}
+    spec:
+      securityContext:
+        # The owner of the data directories on the host, so files stay usable by the plain processes.
+        runAsUser: 1000
+        runAsGroup: 1000
+        sysctls:
+          # Lets Caddy bind 80 and 443 without running as root.
+          - {name: net.ipv4.ip_unprivileged_port_start, value: "0"}
+      containers:
+        - name: auth-service
+          image: me/auth-service:dev
+          envFrom: [{secretRef: {name: me-env}}]
+          env:
+            - {name: ME_AUTH__DATA_DIR, value: /data}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://127.0.0.1:18889"}
+            - {name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-otlp-api-key=$(OTLP_KEY)"}   # OTLP_KEY: from me-env
+          volumeMounts:
+            - {name: config, mountPath: /etc/me/config.toml, subPath: config.toml}
+            - {name: auth-data, mountPath: /data}
+        - name: auth-web
+          image: me/auth-web:dev
+          envFrom: [{secretRef: {name: me-env}}]
+          env:
+            - {name: DataProtection__Path, value: /dp-keys}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://127.0.0.1:18889"}
+            - {name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-otlp-api-key=$(OTLP_KEY)"}   # OTLP_KEY: from me-env
+          volumeMounts:
+            - {name: dp-keys, mountPath: /dp-keys}
+        - name: caddy
+          image: caddy:2
+          envFrom: [{secretRef: {name: me-env}}]   # ME_HOST
+          ports:
+            - {containerPort: 80, hostPort: 80}
+            - {containerPort: 443, hostPort: 443}
+          readinessProbe:
+            tcpSocket: {port: 443}
+          volumeMounts:
+            - {name: config, mountPath: /etc/caddy/Caddyfile, subPath: Caddyfile}
+            - {name: caddy-data, mountPath: /data/caddy}
+            - {name: caddy-config, mountPath: /config}
+        # Traces: http://localhost:18888 on this machine. The page has no sign-in, which is why
+        # run-kubernetes.sh publishes the port on 127.0.0.1 only. Sending telemetry and reading it through
+        # the API (/api/telemetry/*, header x-api-key) need the key. Traces are kept in memory and gone
+        # with the pod.
+        - name: dashboard
+          image: mcr.microsoft.com/dotnet/aspire-dashboard:13.6
+          env:
+            - {name: Dashboard__Frontend__AuthMode, value: Unsecured}
+            - {name: Dashboard__Otlp__AuthMode, value: ApiKey}
+            - name: Dashboard__Otlp__PrimaryApiKey
+              valueFrom: {secretKeyRef: {name: me-env, key: OTLP_KEY}}
+            - {name: Dashboard__Api__Enabled, value: "true"}
+            - {name: Dashboard__Api__AuthMode, value: ApiKey}
+            - name: Dashboard__Api__PrimaryApiKey
+              valueFrom: {secretKeyRef: {name: me-env, key: OTLP_KEY}}
+          ports:
+            - {containerPort: 18888, hostPort: 18888}   # web page; 18889 (OTLP) stays inside the pod
+      volumes:
+        - name: config
+          configMap: {name: me-config}
+        - name: auth-data
+          hostPath: {path: /me/auth-data}
+        - name: dp-keys
+          hostPath: {path: /me/dp-keys}
+        - name: caddy-data
+          hostPath: {path: /me/caddy}
+        - name: caddy-config
+          emptyDir: {}

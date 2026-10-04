@@ -43,8 +43,8 @@ pub fn check_password_size(pw: &str) -> ApiResult<()> {
 
 pub fn validate_password(pw: &str) -> ApiResult<()> {
     check_password_size(pw)?;
-    if pw.chars().count() < 12 {
-        return Err(validation("password must be at least 12 characters"));
+    if pw.chars().count() < 8 {
+        return Err(validation("password must be at least 8 characters"));
     }
     Ok(())
 }
@@ -132,6 +132,7 @@ mod tests {
         );
         assert!(validate_password("short").is_err());
         assert!(validate_password(&"a".repeat(1025)).is_err());
-        assert!(validate_password("twelve chars").is_ok());
+        assert!(validate_password("7 chars").is_err());
+        assert!(validate_password("8 chars!").is_ok());
     }
 }

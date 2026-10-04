@@ -206,7 +206,7 @@ struct ChangePasswordRequest {
     responses(
     (status = 204, description = "password changed; everything but this session revoked"),
     (status = 401, description = "`invalid_credentials`: the current password is wrong, or missing although the account has a password; `unauthorized`: missing or wrong `X-Service-Secret`, or missing, invalid or expired session token", body = ErrorBody),
-    (status = 422, description = "`validation`: malformed body, new password shorter than 12 characters, or a password longer than 1024 bytes", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, new password shorter than 8 characters, or a password longer than 1024 bytes", body = ErrorBody),
     (status = 429, description = "`rate_limited`: too many failed attempts; see `Retry-After`", body = ErrorBody),
 )
 )]

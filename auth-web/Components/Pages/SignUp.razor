@@ -44,9 +44,9 @@ else
         </p>
         <p>
             <label for="password">Password</label>
-            <input id="password" name="Input.Password" type="password" autocomplete="new-password" required minlength="12"
+            <input id="password" name="Input.Password" type="password" autocomplete="new-password" required minlength="8"
                    aria-describedby="@(errors.ContainsKey("password") ? "password-hint password-error" : "password-hint")" />
-            <span id="password-hint" class="hint">At least 12 characters.</span>
+            <span id="password-hint" class="hint">At least 8 characters.</span>
             @if (errors.TryGetValue("password", out var e4)) { <span id="password-error" class="error">@e4</span> }
         </p>
         <p>

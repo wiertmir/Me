@@ -6,8 +6,20 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use opentelemetry::{
+    Context,
+    propagation::{Extractor, TextMapPropagator},
+    trace::{SpanKind, TracerProvider},
+};
+use opentelemetry_sdk::{
+    Resource,
+    error::OTelSdkResult,
+    propagation::TraceContextPropagator,
+    trace::{BatchSpanProcessor, SdkTracerProvider, Span, SpanData, SpanProcessor},
+};
 use tracing::Instrument;
-use tracing_subscriber::EnvFilter;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing_subscriber::{EnvFilter, Layer, fmt::time::ChronoLocal, prelude::*};
 
 use crate::config::{LogConfig, LogFormat};
 
@@ -26,13 +38,90 @@ fn init_to<W>(cfg: &LogConfig, writer: W)
 where
     W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
 {
-    let filter = EnvFilter::try_new(&cfg.level).unwrap_or_else(|_| EnvFilter::new("info"));
-    let b = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    let mut filter = EnvFilter::try_new(&cfg.level).unwrap_or_else(|_| EnvFilter::new("debug"));
+    // The trace exporter and its HTTP/2 plumbing report every batch and frame at debug.
+    for noisy in ["opentelemetry", "h2", "tonic", "tower", "hyper_util"] {
+        filter = filter.add_directive(format!("{noisy}=info").parse().expect("valid directive"));
+    }
+    // Local time, the same shapes auth-web logs: JSON lines carry the UTC offset, the console format leaves it out.
+    let time = match cfg.format {
+        LogFormat::Pretty => "%Y-%m-%d %H:%M:%S%.3f",
+        LogFormat::Json => "%Y-%m-%dT%H:%M:%S%.3f%:z",
+    };
+    let fmt = tracing_subscriber::fmt::layer()
+        .with_timer(ChronoLocal::new(time.into()))
         .with_writer(writer);
-    match cfg.format {
-        LogFormat::Pretty => b.init(),
-        LogFormat::Json => b.json().init(),
+    let fmt = match cfg.format {
+        LogFormat::Pretty => fmt.boxed(),
+        LogFormat::Json => fmt.json().boxed(),
+    };
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt)
+        .with(otel_tracer().map(|t| tracing_opentelemetry::layer().with_tracer(t)))
+        .init();
+}
+
+/// Spans are exported over OTLP (gRPC) when the standard `OTEL_EXPORTER_OTLP_ENDPOINT` variable is set,
+/// as .NET Aspire does for the processes it starts; without it nothing is collected.
+fn otel_tracer() -> Option<opentelemetry_sdk::trace::Tracer> {
+    std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT")?;
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .build()
+        .inspect_err(|e| eprintln!("tracing disabled: {e}"))
+        .ok()?;
+    // ponytail: no flush on shutdown, the last batch (up to OTEL_BSP_SCHEDULE_DELAY) is lost when the
+    // process is stopped; add graceful shutdown if those spans matter
+    let provider = SdkTracerProvider::builder()
+        .with_resource(
+            Resource::builder()
+                .with_service_name("auth-service")
+                .build(),
+        )
+        .with_span_processor(RequestSpans(BatchSpanProcessor::builder(exporter).build()))
+        .build();
+    Some(provider.tracer("auth-service"))
+}
+
+/// Gives the request spans their exported name ("GET /api/users") and kind. Done here and not with
+/// `otel.name` / `otel.kind` span fields, which would be repeated in every log line of the request.
+#[derive(Debug)]
+struct RequestSpans<P>(P);
+
+impl<P: SpanProcessor> SpanProcessor for RequestSpans<P> {
+    fn on_start(&self, span: &mut Span, cx: &Context) {
+        self.0.on_start(span, cx)
+    }
+    fn on_end(&self, mut span: SpanData) {
+        if span.name == "request" {
+            let field = |k| span.attributes.iter().find(|a| a.key.as_str() == k);
+            if let (Some(method), Some(path)) = (field("method"), field("path")) {
+                span.name = format!("{} {}", method.value, path.value).into();
+                span.span_kind = SpanKind::Server;
+            }
+        }
+        self.0.on_end(span)
+    }
+    fn force_flush(&self) -> OTelSdkResult {
+        self.0.force_flush()
+    }
+    fn shutdown_with_timeout(&self, timeout: std::time::Duration) -> OTelSdkResult {
+        self.0.shutdown_with_timeout(timeout)
+    }
+    fn set_resource(&mut self, resource: &Resource) {
+        self.0.set_resource(resource)
+    }
+}
+
+struct Headers<'a>(&'a axum::http::HeaderMap);
+
+impl Extractor for Headers<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key)?.to_str().ok()
+    }
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
     }
 }
 
@@ -68,6 +157,8 @@ pub async fn request_layer(req: Request, next: Next) -> Response {
         status = tracing::field::Empty,
         duration_ms = tracing::field::Empty,
     );
+    // Continue the caller's trace (auth-web sends `traceparent`); does nothing when tracing is off.
+    let _ = span.set_parent(TraceContextPropagator::new().extract(&Headers(req.headers())));
     let start = Instant::now();
     let mut resp = next.run(req).instrument(span.clone()).await;
     span.record("status", resp.status().as_u16());

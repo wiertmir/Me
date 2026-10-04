@@ -3,6 +3,10 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using Serilog;
+using Serilog.Events;
 
 namespace AuthWeb.Infrastructure;
 
@@ -57,6 +61,22 @@ public static class Startup
             // Known proxies/networks stay at their defaults: loopback only.
         });
 
+        // Traces are exported over OTLP when the standard OTEL_EXPORTER_OTLP_ENDPOINT variable is set, as
+        // .NET Aspire does for the processes it starts; without it nothing is collected.
+        if (!string.IsNullOrEmpty(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))
+            services.AddOpenTelemetry()
+                .ConfigureResource(r => r.AddService("auth-web"))
+                .WithTracing(t => t
+                    // Query strings hold one-time tokens. They are redacted by default, but Aspire switches the
+                    // redaction off for the processes it starts, so the attribute is dropped here.
+                    .AddAspNetCoreInstrumentation(o => o.EnrichWithHttpRequest = (activity, _) =>
+                        activity.SetTag("url.query", null))
+                    // Calls to auth-service: its paths can hold one-time secrets (the sign-in challenge), so the
+                    // span keeps only the origin. The service's own span has the route template.
+                    .AddHttpClientInstrumentation(o => o.EnrichWithHttpRequestMessage = (activity, request) =>
+                        activity.SetTag("url.full", request.RequestUri?.GetLeftPart(UriPartial.Authority)))
+                    .AddOtlpExporter());
+
         services.AddScoped<RequestContext>();
         services.AddScoped<CircuitHandler, ClientCircuitHandler>();
         services.AddTransient<ClientHeadersHandler>();
@@ -72,6 +92,10 @@ public static class Startup
     {
         app.UseForwardedHeaders();
         app.UseMiddleware<RequestIdMiddleware>();
+        // One line per request: method, path (never the query string), status, time. A 5xx without an exception
+        // stays at information: whatever caused it has already logged its own error.
+        app.UseSerilogRequestLogging(o =>
+            o.GetLevel = (_, _, ex) => ex is null ? LogEventLevel.Information : LogEventLevel.Error);
         app.UseMiddleware<SecurityHeadersMiddleware>();
         if (!app.Environment.IsDevelopment())
         {

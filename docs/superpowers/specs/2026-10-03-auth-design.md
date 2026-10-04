@@ -124,7 +124,7 @@ values). Passwords use Argon2id.
   account must verify its email before it can sign in; without SMTP it is
   active immediately, with its email address left unverified (see "Security
   rules" below).
-- **Password rules:** minimum 12 characters, no composition rules.
+- **Password rules:** minimum 8 characters, no composition rules.
 - **Reset:** emailed one-time link (1 hour). Without SMTP only an admin can
   reset. The response never reveals whether an email exists.
 - **Setting a first password:** an account without a password (created by
@@ -264,7 +264,8 @@ failures give one generic message regardless of cause.
 Structured logging with `tracing`. Events carry fields (`user_id`,
 `client_id`, `provider`, `request_id`, `ip`, outcome), not interpolated
 strings. Output goes to the console; config selects human-readable (default,
-coloured) or JSON lines, and the level.
+coloured) or JSON lines, and the level (default debug). Timestamps are local
+time; JSON lines add the UTC offset.
 
 - Every request gets a span with method, path, status, duration and a request
   id. An incoming `X-Request-Id` (sent by auth-web) is reused, so one user
@@ -274,6 +275,11 @@ coloured) or JSON lines, and the level.
   refresh-token reuse, app-password use, every admin action.
 - Passwords, tokens, codes and secrets are never logged. The only exception is
   the seeded user's one-time password at first start.
+- Tracing: when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, both processes export
+  OpenTelemetry traces over OTLP; auth-web passes the trace context to
+  auth-service so a request is one trace. Spans follow the same rule as logs:
+  route templates, no query strings. `apphost/` is a .NET Aspire app host that
+  runs both in development with its dashboard as the collector.
 
 ### OpenAPI
 
@@ -323,11 +329,13 @@ auth-service's internal API.
 - **Challenge handling:** `/signin?challenge=…` signs the user in if needed,
   then accepts the auth request and redirects to the client. No consent
   screen, since all clients are our own.
-- **Logging:** NLog (`NLog.Web.AspNetCore`) as the logging provider, with
+- **Logging:** Serilog (`Serilog.AspNetCore`) as the logging provider, with
   structured message templates (`"Sign-in failed for {Username}"`) so
-  properties stay queryable. Console target, coloured and human-readable by
-  default; the `LOG_FORMAT=json` environment variable selects the JSON layout
-  (both targets are defined in `nlog.config`). Each request generates an
+  properties stay queryable. Console sink, coloured and human-readable by
+  default; the `LOG_FORMAT=json` environment variable selects JSON lines
+  (configured in `Program.cs`). Level debug, with the framework's own loggers
+  held at warning (below that they print request URLs); one line per request
+  without the query string. Timestamps are local time; JSON lines add the UTC offset. Each request generates an
   `X-Request-Id`, includes it in every log event and forwards it to
   auth-service. Form values for passwords and tokens are never logged.
 - **Design:** one visual system built for this app — light and dark themes,
