@@ -6,3 +6,6 @@ obj/
 *.key
 config.local.toml
 .env
+.superpowers/
+data/
+node_modules/

@@ -1,7 +1,7 @@
 # Me — Authentication: design
 
 Date: 2026-10-03
-Status: awaiting review
+Status: implemented
 
 ## Context
 
@@ -57,7 +57,9 @@ provides TLS:
 
 | Path                                             | Goes to      |
 |--------------------------------------------------|--------------|
+| `/social/complete`                               | auth-web (the page that finishes a social sign-in; matched first) |
 | `/oauth/*`, `/.well-known/*`, `/social/*`        | auth-service |
+| `/api/*`                                         | nothing (404) |
 | everything else                                  | auth-web     |
 
 auth-service's `/api/*` is not exposed publicly. Only auth-web (and later the
@@ -70,8 +72,9 @@ issuer URL is set in config.
 ## auth-service
 
 **Stack:** tokio, axum, SQLite (rusqlite, bundled), argon2, jsonwebtoken,
-oauth2 + reqwest (social providers), lettre (SMTP), serde, tracing, utoipa
-(OpenAPI).
+reqwest (social providers; the authorization code flow is written directly
+against it, the `oauth2` crate is not used), lettre (SMTP), serde, tracing,
+utoipa (OpenAPI).
 
 ### Data model
 
@@ -79,16 +82,30 @@ oauth2 + reqwest (social providers), lettre (SMTP), serde, tracing, utoipa
   display_name, password_hash (nullable — social-only accounts), is_admin,
   must_change_password, disabled, created_at.
 - `identities`: user_id, provider (`google` | `github` | `microsoft`),
-  provider_subject, email. Unique on (provider, provider_subject).
-- `sessions`: token hash, user_id, created_at, last_seen, expires_at,
-  user agent, IP. A session is what the web app holds after sign-in.
+  provider_subject, email, created_at. Unique on (provider, provider_subject)
+  and on (user_id, provider).
+- `sessions`: id (UUID, what the session list and "revoke" refer to; never the
+  token), token hash, user_id, created_at, last_seen, expires_at, user agent,
+  IP. A session is what the web app holds after sign-in.
 - `auth_requests`: pending OAuth authorization requests ("challenges"):
   client_id, redirect_uri, scope, state, PKCE challenge, nonce, expires_at.
 - `auth_codes`: one-time authorization codes bound to an auth request and user.
-- `refresh_tokens`: token hash, family id, user_id, client_id, expires_at,
-  used flag.
+- `refresh_tokens`: token hash, family id, user_id, client_id, scope,
+  expires_at, used flag.
 - `app_passwords`: id, user_id, label, hash, created_at, last_used.
 - `email_tokens`: hash, user_id, purpose (`verify` | `reset`), expires_at.
+- `social_states`: state hash, provider, PKCE verifier, optional auth-request
+  challenge, optional link_user_id (set when the flow was started to link a
+  provider to a signed-in user), expires_at (10 minutes). One per started
+  provider flow; consumed by the callback.
+- `social_tickets`: ticket hash, user_id, optional challenge, expires_at
+  (60 seconds). What the callback hands to auth-web to exchange for a session.
+- `social_link_intents`: token hash, user_id, provider, expires_at
+  (10 minutes). Lets the signed-in user's browser start a link flow at
+  auth-service, which cannot see the auth-web cookie.
+- `social_link_tickets`: ticket hash, user_id, provider, subject, email,
+  expires_at (60 seconds). The result of a link flow, waiting for the user to
+  confirm it in their session.
 
 Every secret token is stored hashed (SHA-256; they are high-entropy random
 values). Passwords use Argon2id.
@@ -99,16 +116,25 @@ values). Passwords use Argon2id.
   (username configurable) with a random one-time password logged to the
   console and `must_change_password` set.
 - **Forced change:** a session for a user with `must_change_password` is
-  accepted only by the change-password endpoint. Everything else answers
-  "password change required". Admin-created users and admin password resets
+  accepted only by the change-password endpoint, `GET /api/me` and sign-out.
+  Everything else answers "password change required". Admin-created users and admin password resets
   set the same flag.
 - **Sign-up:** username, email, password. Controlled by config
   `signup = "open" | "disabled"` (default open). When SMTP is configured the
   account must verify its email before it can sign in; without SMTP it is
-  active immediately.
+  active immediately, with its email address left unverified (see "Security
+  rules" below).
 - **Password rules:** minimum 12 characters, no composition rules.
 - **Reset:** emailed one-time link (1 hour). Without SMTP only an admin can
   reset. The response never reveals whether an email exists.
+- **Setting a first password:** an account without a password (created by
+  social sign-in) sets one through the change-password endpoint without a
+  current password. An account that has one must always give it.
+- **Recovery command:** `auth-service <config> reset-password <username>` gives
+  the user a one-time password through the admin-reset code path, prints it
+  and exits without starting the server. It is the way back in for a sole
+  admin who cannot use "Forgot password" (the seeded admin's address defaults
+  to `<seed_username>@localhost`; config `seed_email` sets a real one).
 - **Rate limiting:** failed sign-ins are counted per username and per IP, with
   increasing delays. Counters are in memory (lost on restart — acceptable for
   one process).
@@ -123,14 +149,63 @@ config is not offered.
 On callback:
 
 1. Identity already linked → sign that user in.
-2. Not linked, started from the account page of a signed-in user → link it.
+2. Not linked, started from the account page of a signed-in user → issue a
+   one-time link ticket; the identity is attached only when that user confirms
+   it in their own session.
 3. Not linked, provider reports a verified email equal to an existing user's
    **verified** email → link and sign in.
-4. Otherwise, if sign-up is open → create a new account (no password) from the
+4. The email belongs to an existing user but rule 3 does not hold → refuse
+   (`account_exists`): the user signs in with the password and links the
+   provider from the account page.
+5. Otherwise, if sign-up is open → create a new account (no password) from the
    provider's profile. If sign-up is disabled → refuse.
 
 The callback ends by redirecting the browser to auth-web with a one-time
 ticket, which auth-web exchanges for a session.
+
+### Security rules
+
+Decided during implementation; each closes a way to take over an account.
+
+- **Self sign-up is never auto-verified.** An address typed at sign-up is
+  verified only by the mailed link (or by completing a mailed reset). Without
+  SMTP it stays unverified, so rule 3 never attaches a provider identity to an
+  account someone registered with another person's address. Admin-created
+  users and the seeded admin are verified: the admin vouches for them.
+- **Microsoft emails are never treated as verified.** Microsoft gives no
+  reliable verification signal, so a Microsoft identity is never linked by
+  email and an account created from one has an unverified address.
+- **No verification mail for passwordless accounts.** An account created
+  through a provider may carry an address its creator does not own, so it gets
+  no verification mail while it has no password. Once it sets one it is
+  treated like any password sign-up, which is safe because of the next rule.
+- **Proving an address evicts whatever was there before.** Verifying an
+  address through the mailed link removes every identity linked before that
+  moment and revokes all sign-in state. A password reset on an account with an
+  unverified address does the same. The password survives verification; an
+  owner who did not set it uses "Forgot password", which replaces it.
+- **A password reset revokes all sign-in state** — sessions, refresh tokens,
+  authorization codes, pending social tickets, link intents and link tickets,
+  other reset links, app passwords — in the transaction that stores the new
+  password. When the account's email was unverified it also removes the linked
+  identities, so whoever proves ownership of the address gets the account
+  alone. This holds for the emailed reset, the admin reset and the recovery
+  command.
+- **A voluntary password change and an unlink revoke everything but the
+  current session.** Change-password also deletes app passwords; unlink keeps
+  them. Disabling a user revokes everything. One function
+  (`users::revoke_sign_in_state`) holds the list of credential tables for all
+  of these, and a test fails when the schema gains a table it does not cover.
+  Recovery order for a user: unlink what you do not recognise, then change the
+  password.
+- **Identity links are confirmed in-session.** A link flow ends with a one-time
+  link ticket bound to the user who started it; nothing is attached until that
+  user's session posts the ticket (`POST /api/me/identities/confirm`) after an
+  explicit confirmation on the Security page. A link flow completed in another
+  browser therefore attaches nothing.
+- **The example service secret is refused off loopback.** The service does not
+  start with the secret published in `config.example.toml` unless it listens
+  on a loopback address.
 
 ### OAuth 2 / OpenID Connect for our own apps
 
@@ -163,13 +238,17 @@ redirect URIs. The Slint client uses a loopback redirect.
 Used by auth-web; user-scoped calls also carry the user's session token.
 
 - Sign-in with password; sign-out; exchange social ticket for a session.
-- Sign-up; verify email; request reset; complete reset; change password.
-- Current user: profile, linked identities (list/unlink), sessions
+- Sign-up; verify email; resend verification; request reset; complete reset;
+  change or set password.
+- Social: list configured providers; create a link intent.
+- Current user: profile, linked identities (list/unlink/confirm link), sessions
   (list/revoke), app passwords (create — shown once / list / delete).
 - Admin: list users, create user, disable/enable, reset password, set admin.
 - Auth requests: fetch details, accept.
-- `POST /api/app-passwords/verify` — for the CalDAV bridge: username + app
-  password → user id.
+- `POST /api/app-passwords/verify` — for the CalDAV bridge: username (or
+  email) + app password → user id and username. Guarded by the service secret
+  like the rest of `/api/*`, rate limited, and it fails for disabled users and
+  users who must change their password.
 
 Guard rails: an account cannot remove its last sign-in method; the last admin
 cannot be demoted or disabled.
@@ -215,8 +294,9 @@ The calendar and tasks services will follow the same convention.
 ### Configuration
 
 One TOML file plus environment overrides for secrets: issuer URL, listen
-address, database path, service secret, sign-up mode, seed username, SMTP
-settings, per-provider client id/secret, OAuth clients.
+address, data directory, service secret, sign-up mode, seed username and
+email, token audience, log format and level, SMTP settings, per-provider
+client id/secret, OAuth clients.
 
 ## common
 
@@ -246,7 +326,8 @@ auth-service's internal API.
 - **Logging:** NLog (`NLog.Web.AspNetCore`) as the logging provider, with
   structured message templates (`"Sign-in failed for {Username}"`) so
   properties stay queryable. Console target, coloured and human-readable by
-  default, JSON layout selectable in `nlog.config`. Each request generates an
+  default; the `LOG_FORMAT=json` environment variable selects the JSON layout
+  (both targets are defined in `nlog.config`). Each request generates an
   `X-Request-Id`, includes it in every log event and forwards it to
   auth-service. Form values for passwords and tokens are never logged.
 - **Design:** one visual system built for this app — light and dark themes,
@@ -264,8 +345,18 @@ auth-service's internal API.
   stub provider server.
 - **common:** token verification accepts a valid token and rejects expired,
   wrong-audience and wrong-key tokens.
-- **auth-web:** it has little logic of its own, so it is verified by running
-  each flow in a real browser against a running auth-service.
+- **auth-web:** three layers.
+  - bUnit component tests (`auth-web.Tests`) for the interactive pages, against
+    a stubbed API: link confirmation, unlink, app passwords, admin actions,
+    the profile form, session expiry.
+  - `scripts/smoke-auth-web.sh`: starts both processes on a temporary data
+    directory and drives the server-rendered flows with curl — sign-in, forced
+    change, sign-up with and without mail (against a local SMTP sink),
+    verification, reset, the OAuth challenge, security headers, outage
+    handling, setting a first password.
+  - `scripts/browser-check.sh`: the same two processes driven through headless
+    Google Chrome (Playwright) for what needs a real browser — the Blazor
+    circuit, dialogs, clipboard, responsive layout, console and CSP errors.
 
 ## Build order
 

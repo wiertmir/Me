@@ -1,0 +1,36 @@
+@inherits SsrPage
+@inject Microsoft.Extensions.Options.IOptions<AuthServiceOptions> Options
+
+@if (providers.Count > 0)
+{
+    <ul class="providers">
+        @foreach (var p in providers)
+        {
+            <li><a href="@Href(p)"><img src="/img/@(p).svg" alt="" width="18" height="18" />@Labels[p]</a></li>
+        }
+    </ul>
+}
+
+@code {
+    [Parameter] public string? Challenge { get; set; }
+
+    private static readonly Dictionary<string, string> Labels = new()
+    {
+        ["google"] = "Continue with Google",
+        ["github"] = "Continue with GitHub",
+        ["microsoft"] = "Continue with Microsoft",
+    };
+
+    private List<string> providers = [];
+
+    // A failure here only hides the buttons: the password form still works.
+    protected override async Task OnInitializedAsync()
+    {
+        var r = await Api.Providers();
+        if (r.Ok) providers = r.Value!.Where(Labels.ContainsKey).ToList();
+    }
+
+    private string Href(string provider) =>
+        $"{Options.Value.PublicUrl.TrimEnd('/')}/social/{Uri.EscapeDataString(provider)}/start"
+        + (string.IsNullOrEmpty(Challenge) ? "" : "?challenge=" + Uri.EscapeDataString(Challenge));
+}

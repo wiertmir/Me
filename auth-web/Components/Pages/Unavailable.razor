@@ -1,0 +1,13 @@
+@page "/unavailable"
+@attribute [ExcludeFromInteractiveRouting]
+@layout AuthLayout
+@inherits SsrPage
+
+<PageTitle>Service unavailable</PageTitle>
+<h1>Service unavailable</h1>
+<p>We could not reach the sign-in service. Please try again in a moment.</p>
+<p><a href="/signin">Try again</a></p>
+
+@code {
+    protected override void OnInitialized() => HttpContext.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+}

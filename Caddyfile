@@ -1,0 +1,32 @@
+# One public origin for both processes (see README, "Deployment behind Caddy").
+# `localhost` works as is for a local try-out: Caddy issues a certificate from its own local CA.
+# For a real deployment replace `localhost` with the public hostname, e.g. `me.example.com`.
+localhost {
+	# auth-web's own page that finishes a social sign-in. It lives under /social/, so it is
+	# listed before the /social/* rule that sends everything else there to auth-service.
+	handle /social/complete {
+		reverse_proxy 127.0.0.1:5080
+	}
+
+	# auth-service: the OAuth 2 / OpenID Connect endpoints and the social sign-in redirects.
+	handle /oauth/* {
+		reverse_proxy 127.0.0.1:8081
+	}
+	handle /.well-known/* {
+		reverse_proxy 127.0.0.1:8081
+	}
+	handle /social/* {
+		reverse_proxy 127.0.0.1:8081
+	}
+
+	# auth-service's /api/* is the internal API (guarded only by the shared service secret) and its
+	# documentation page. It is never proxied; auth-web has no /api/ routes either, so answer here.
+	handle /api/* {
+		respond 404
+	}
+
+	# Everything else: auth-web (pages, static files, the Blazor WebSocket).
+	handle {
+		reverse_proxy 127.0.0.1:5080
+	}
+}

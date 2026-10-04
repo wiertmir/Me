@@ -1,0 +1,605 @@
+/* Me — auth-web stylesheet. One file, no build step.
+   Sections: 1 tokens · 2 dark theme · 3 base · 4 layout · 5 forms and buttons · 6 messages
+             7 tables · 8 components · 9 utilities · 10 motion
+   The Content-Security-Policy allows styles from this origin only: no inline styles, no data: URIs. */
+
+/* ---- 1 tokens (light theme) ------------------------------------------------------------------ */
+:root {
+    color-scheme: light dark;
+
+    --bg: #f3f5f4;
+    --surface: #ffffff;
+    --surface-2: #e9edec;
+    --border: #d3dad8;
+    --border-strong: #73827f;
+    --text: #14201e;
+    --text-muted: #4d5c59;
+
+    --accent: #0b6259;
+    --accent-hover: #084a43;
+    --on-accent: #ffffff;
+    --accent-soft: #d9eeea;
+    --accent-text: #0a5a52;
+
+    --danger: #b3261e;
+    --danger-hover: #8f1d17;
+    --on-danger: #ffffff;
+    --danger-soft: #fbeae8;
+    --danger-text: #9c1f18;
+
+    --warn-soft: #fff4d6;
+    --warn-border: #946200;
+    --warn-text: #5a3c00;
+
+    --ok-soft: #e0f2e6;
+    --ok-text: #17603a;
+
+    --dot: #c9d2cf;
+    --backdrop: rgb(12 19 18 / .55);
+    --shadow-1: 0 1px 2px rgb(20 32 30 / .06), 0 8px 24px -12px rgb(20 32 30 / .18);
+    --shadow-2: 0 2px 6px rgb(20 32 30 / .1), 0 24px 48px -16px rgb(20 32 30 / .35);
+
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    --fs-xs: .8125rem;
+    --fs-sm: .875rem;
+    --fs-md: 1rem;
+    --fs-lg: 1.125rem;
+    --fs-xl: 1.3125rem;
+    --fs-2xl: 1.75rem;
+
+    --sp-1: .25rem;
+    --sp-2: .5rem;
+    --sp-3: .75rem;
+    --sp-4: 1rem;
+    --sp-5: 1.5rem;
+    --sp-6: 2rem;
+    --sp-7: 3rem;
+
+    --r-sm: 4px;
+    --r-md: 7px;
+    --r-lg: 12px;
+    --r-pill: 999px;
+
+    --control-h: 2.75rem;
+    --page-w: 70rem;
+    --ease-out: cubic-bezier(.16, 1, .3, 1);
+    --dur-1: 120ms;
+    --dur-2: 220ms;
+}
+
+/* ---- 2 dark theme: its own palette, not the light one inverted -------------------------------- */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0c1312;
+        --surface: #141d1b;
+        --surface-2: #1c2826;
+        --border: #2b3a37;
+        --border-strong: #72847f;
+        --text: #e6edeb;
+        --text-muted: #a3b3af;
+
+        --accent: #5fd0be;
+        --accent-hover: #86dfd0;
+        --on-accent: #04211c;
+        --accent-soft: #143732;
+        --accent-text: #7fdccd;
+
+        --danger: #ff8f85;
+        --danger-hover: #ffaba3;
+        --on-danger: #2b0805;
+        --danger-soft: #3a1715;
+        --danger-text: #ffa59c;
+
+        --warn-soft: #2a220b;
+        --warn-border: #d9a441;
+        --warn-text: #f3dba0;
+
+        --ok-soft: #12301f;
+        --ok-text: #86d8a4;
+
+        --dot: #23302e;
+        --backdrop: rgb(0 0 0 / .66);
+        --shadow-1: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px -12px rgb(0 0 0 / .6);
+        --shadow-2: 0 2px 6px rgb(0 0 0 / .5), 0 24px 48px -16px rgb(0 0 0 / .8);
+    }
+
+    .providers a[href*="/github/"] img { filter: invert(1); }
+}
+
+/* ---- 3 base --------------------------------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+    font-family: var(--font);
+    font-size: 100%;
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--bg);
+    accent-color: var(--accent);
+    caret-color: var(--accent);
+    scrollbar-color: var(--border-strong) transparent;
+    -webkit-text-size-adjust: 100%;
+}
+
+body { margin: 0; min-height: 100dvh; }
+
+::selection { background: var(--accent); color: var(--on-accent); }
+
+h1, h2 { margin: 0; line-height: 1.2; text-wrap: balance; letter-spacing: -.015em; }
+h1 { font-size: var(--fs-2xl); font-weight: 650; }
+h2 { font-size: var(--fs-xl); font-weight: 650; }
+h1:focus { outline: none; } /* Blazor moves focus here after navigation, for screen readers; it is not a control */
+
+p { margin: 0 0 var(--sp-4); max-width: 68ch; }
+
+a {
+    color: var(--accent-text);
+    text-decoration-thickness: 1px;
+    text-underline-offset: .2em;
+    border-radius: var(--r-sm);
+}
+a:hover { text-decoration-thickness: 2px; }
+
+code { font-family: var(--font-mono); font-size: .92em; }
+time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+strong { font-weight: 650; }
+
+/* One focus ring for everything a keyboard can reach. */
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* ---- 4 layout ------------------------------------------------------------------------------- */
+/* Signed-in shell */
+.site-header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+.site-header-inner {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-5);
+    flex-wrap: wrap;
+    max-width: var(--page-w);
+    margin: 0 auto;
+    padding: 0 var(--sp-4);
+    min-height: 3.5rem;
+}
+.brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--fs-lg);
+    font-weight: 700;
+    letter-spacing: -.02em;
+    color: var(--text);
+    text-decoration: none;
+}
+.brand img { display: block; width: 1.75rem; height: 1.75rem; }
+
+.site-nav { display: flex; gap: var(--sp-1); align-self: stretch; }
+.site-nav a {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 var(--sp-3);
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+    font-weight: 550;
+    text-decoration: none;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    border-top: 2px solid transparent; /* keeps the label optically centred */
+    border-radius: 0;
+    transition: color var(--dur-1), border-color var(--dur-1);
+}
+.site-nav a:hover { color: var(--text); border-bottom-color: var(--border-strong); }
+.site-nav a.active { color: var(--text); border-bottom-color: var(--accent); }
+.site-nav a:focus-visible { outline-offset: -3px; }
+
+.who {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-left: auto;
+    font-size: var(--fs-sm);
+}
+.who-name { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 12rem; }
+
+.page { max-width: var(--page-w); margin: 0 auto; padding: var(--sp-6) var(--sp-4) var(--sp-7); }
+.page > h1 { margin-bottom: var(--sp-5); }
+.page > h1:has(+ p) { margin-bottom: var(--sp-3); }
+.page > h1 + p { color: var(--text-muted); font-size: var(--fs-lg); }
+/* Sections read like a settings document: a rule and room above each heading, no boxes. */
+.page h2 {
+    margin: var(--sp-6) 0 var(--sp-4);
+    padding-top: var(--sp-5);
+    border-top: 1px solid var(--border);
+}
+
+@media (max-width: 47.99rem) {
+    .site-header-inner { min-height: 0; padding-top: var(--sp-2); }
+    /* Two rows: brand and user, then the section tabs, which scroll sideways inside their own row if they must. */
+    .site-nav { order: 3; flex-basis: 100%; margin: 0 calc(-1 * var(--sp-2)); overflow-x: auto; scrollbar-width: none; }
+    .site-nav a { min-height: 2.75rem; padding: 0 var(--sp-2); }
+    .who-name { max-width: 9rem; }
+    .page { padding-top: var(--sp-5); }
+    .page h2 { margin-top: var(--sp-6); }
+}
+
+/* Signed-out shell: one narrow column, one task. */
+.auth {
+    position: relative;
+    display: grid;
+    align-content: start;
+    justify-items: center;
+    gap: var(--sp-5);
+    min-height: 100dvh;
+    padding: clamp(var(--sp-5), 11vh, 7rem) var(--sp-4) var(--sp-6);
+    isolation: isolate;
+}
+/* A measured dot grid that fades out down the page. */
+.auth::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background-image: radial-gradient(circle at 1px 1px, var(--dot) 1px, transparent 1.5px);
+    background-size: 22px 22px;
+    background-position: center top;
+    mask-image: linear-gradient(to bottom, #000, transparent 70%);
+}
+.auth .brand { font-size: var(--fs-xl); }
+.auth .brand img { width: 2.25rem; height: 2.25rem; }
+
+.auth-panel {
+    width: 100%;
+    max-width: 25.5rem;
+    padding: var(--sp-6);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-1);
+}
+.auth-panel > h1 { font-size: 1.5rem; margin-bottom: var(--sp-5); }
+.auth-panel > h1:has(+ p:not([role])) { margin-bottom: var(--sp-2); }
+.auth-panel > h1 + p:not([role]) { margin-bottom: var(--sp-5); color: var(--text-muted); }
+.auth-panel > h2 { font-size: var(--fs-lg); margin: var(--sp-5) 0 var(--sp-3); padding-top: var(--sp-5); border-top: 1px solid var(--border); }
+.auth-panel > :last-child { margin-bottom: 0; }
+/* The links under a form ("Create an account · Forgot password?") */
+.auth-panel > form + p, .auth-panel > .providers + p, .auth-panel > .auth-links {
+    margin-top: var(--sp-5);
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+    text-align: center;
+}
+.auth-panel input:not([type=hidden]), .auth-panel button[type=submit] { width: 100%; }
+
+@media (max-width: 30rem) {
+    .auth { padding-top: var(--sp-5); gap: var(--sp-4); }
+    .auth-panel { padding: var(--sp-5) var(--sp-4); }
+}
+
+/* ---- 5 forms and buttons -------------------------------------------------------------------- */
+form > p { margin-bottom: var(--sp-4); max-width: none; }
+.page form { max-width: 26rem; }
+.page form.form-row { max-width: none; display: grid; gap: 0 var(--sp-4); grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); align-items: start; }
+.form-row > .form-actions { grid-column: 1 / -1; }
+.form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+
+label { display: block; margin-bottom: var(--sp-1); font-size: var(--fs-sm); font-weight: 600; }
+
+input:not([type=hidden]) {
+    display: block;
+    width: 100%;
+    min-height: var(--control-h);
+    padding: 0 var(--sp-3);
+    font: inherit;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    transition: border-color var(--dur-1), box-shadow var(--dur-1);
+}
+input:hover { border-color: var(--text-muted); }
+input:focus-visible { outline-offset: 0; border-color: var(--accent); }
+/* A field with an error message: heavier border in the danger colour, and the message carries an icon and text. */
+input[aria-describedby*="error"] { border-color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); }
+
+.hint { display: block; margin-top: var(--sp-1); font-size: var(--fs-sm); color: var(--text-muted); }
+
+button, .providers a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2);
+    min-height: var(--control-h);
+    padding: 0 var(--sp-4);
+    font: inherit;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color var(--dur-1), border-color var(--dur-1), color var(--dur-1), transform var(--dur-1);
+}
+button:hover, .providers a:hover { background: var(--surface-2); border-color: var(--text-muted); }
+button:active, .providers a:active { transform: translateY(1px); }
+
+/* The one main action of a form. */
+button[type=submit], .btn-primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); font-size: var(--fs-md); }
+button[type=submit]:hover, .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+.btn-danger { color: var(--on-danger); background: var(--danger); border-color: var(--danger); }
+.btn-danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); }
+
+td button { min-height: 2.125rem; padding: 0 var(--sp-3); }
+
+button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+button[aria-busy=true] { opacity: 1; cursor: progress; }
+button[aria-busy=true]::before, .loading::before {
+    content: "";
+    width: 1em;
+    height: 1em;
+    flex: none;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+}
+
+/* Provider buttons: same shape for each, mark at the left edge, label centred. */
+.providers {
+    display: grid;
+    gap: var(--sp-2);
+    margin: var(--sp-5) 0 0;
+    padding: 0;
+    list-style: none;
+}
+.providers::before {
+    content: "or";
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-3);
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+    background: linear-gradient(var(--border), var(--border)) left center / calc(50% - 1.25rem) 1px no-repeat,
+                linear-gradient(var(--border), var(--border)) right center / calc(50% - 1.25rem) 1px no-repeat;
+    justify-content: center;
+}
+.providers a { position: relative; width: 100%; padding: 0 var(--sp-7); }
+.providers img { position: absolute; left: var(--sp-4); width: 1.125rem; height: 1.125rem; }
+
+/* ---- 6 messages: errors, notices, loading, empty -------------------------------------------- */
+/* Icons are masks, so they take the colour of the text they sit in. */
+.error::before, p[role=alert]::before, [role=status]:not(:empty)::before, .secret > h2::before, .btn-copy::before {
+    content: "";
+    flex: none;
+    width: 1.25em;
+    height: 1.25em;
+    background: currentColor;
+    mask: url("img/alert.svg") center / contain no-repeat;
+}
+.error:empty::before { content: none; }
+
+/* Field-level message, next to or under its control */
+.error { color: var(--danger-text); font-size: var(--fs-sm); font-weight: 550; }
+span.error { display: inline-flex; align-items: flex-start; gap: var(--sp-1); margin-top: var(--sp-1); }
+span.error::before { margin-top: .05em; }
+
+/* Form-level alert */
+p.error, div.error:not(:empty), p[role=alert] {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    max-width: 44rem;
+    margin: 0 0 var(--sp-4);
+    padding: var(--sp-3);
+    color: var(--danger-text);
+    font-size: var(--fs-sm);
+    font-weight: 550;
+    background: var(--danger-soft);
+    border: 1px solid var(--danger);
+    border-radius: var(--r-md);
+}
+
+/* Notice: something happened, or something to know */
+[role=status]:not(:empty) {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-2);
+    max-width: 44rem;
+    margin: 0 0 var(--sp-4);
+    padding: var(--sp-3);
+    font-size: var(--fs-sm);
+    font-weight: 550;
+    color: var(--text);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: var(--r-md);
+}
+[role=status]:not(:empty)::before { color: var(--accent-text); mask-image: url("img/info.svg"); }
+[role=status] > p { margin: 0; }
+/* A notice that holds an error box shows only the error box. */
+[role=status]:has(> .error):not(:has(> :not(.error))) { display: block; padding: 0; border: 0; background: none; }
+[role=status]:has(> .error):not(:has(> :not(.error)))::before { content: none; }
+/* Inline "Saved." beside a button */
+span[role=status]:not(:empty) { display: inline-flex; align-items: center; margin: 0; padding: 0; color: var(--ok-text); background: none; border: 0; }
+span[role=status]:not(:empty)::before { color: inherit; mask-image: url("img/check.svg"); }
+
+.loading { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-muted); }
+
+.empty {
+    max-width: none;
+    padding: var(--sp-5) var(--sp-4);
+    color: var(--text-muted);
+    text-align: center;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-md);
+}
+
+.load-failed { display: grid; justify-items: start; gap: var(--sp-3); }
+.load-failed > p { margin: 0; }
+
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 10;
+    padding: var(--sp-3) var(--sp-4);
+    color: var(--warn-text);
+    background: var(--warn-soft);
+    border-top: 1px solid var(--warn-border);
+    font-size: var(--fs-sm);
+}
+
+/* ---- 7 tables ------------------------------------------------------------------------------- */
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } /* the h2 above says the same */
+th, td { padding: var(--sp-3); text-align: left; vertical-align: middle; border-bottom: 1px solid var(--border); overflow-wrap: break-word; }
+thead th { padding-block: var(--sp-2); font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); background: var(--surface-2); border-bottom-color: var(--border-strong); white-space: nowrap; }
+thead th:first-child { border-radius: var(--r-md) 0 0 0; }
+thead th:last-child { border-radius: 0 var(--r-md) 0 0; }
+tbody th { font-weight: 600; }
+tbody th .badge { margin-left: var(--sp-2); }
+tbody tr { transition: background-color var(--dur-1); }
+tbody tr:hover { background: var(--surface); }
+td button { white-space: nowrap; }
+/* Actions sit at the right edge, in a column only as wide as its buttons. */
+thead th:last-child, td.actions { width: 1%; text-align: right; }
+.actions-inner { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: var(--sp-2); min-width: 15rem; }
+@media (min-width: 72rem) { .actions-inner { flex-wrap: nowrap; } }
+table + p { margin-top: var(--sp-4); }
+td { font-variant-numeric: tabular-nums; }
+
+/* Long values (an email address) may break anywhere, so a column never forces the page wider than the screen. */
+td.wrap { min-width: 10rem; overflow-wrap: anywhere; }
+
+/* Below 60rem a table becomes a list of stacked rows: each row is a block, each cell a "label: value" line.
+   The row's actions stay in view, which a sideways-scrolling table would hide at 360px. */
+@media (max-width: 59.99rem) {
+    td.wrap { min-width: 0; }
+    table, tbody, tbody tr, tbody th, td { display: block; }
+    thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    tbody tr { padding: var(--sp-3); margin-bottom: var(--sp-3); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); }
+    tbody th, td { padding: 0; border: 0; }
+    tbody th { margin-bottom: var(--sp-2); font-size: var(--fs-md); }
+    td { position: relative; padding: .2rem 0 .2rem 7rem; }
+    td::before { content: attr(data-label); position: absolute; left: 0; top: .35rem; color: var(--text-muted); font-size: var(--fs-xs); }
+    td.actions { width: auto; margin-top: var(--sp-3); padding-left: 0; text-align: left; }
+    .actions-inner { justify-content: flex-start; min-width: 0; }
+    td.actions::before { content: none; }
+    td.actions:not(:has(button)) { display: none; }
+    td.actions button { min-height: var(--control-h); }
+}
+
+/* ---- 8 components --------------------------------------------------------------------------- */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: .1rem .5rem;
+    font-family: var(--font);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+    color: var(--text-muted);
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-pill);
+    vertical-align: middle;
+}
+.badge-ok { color: var(--ok-text); background: var(--ok-soft); border-color: currentColor; }
+.badge-accent { color: var(--accent-text); background: var(--accent-soft); border-color: currentColor; }
+.badge-warn { color: var(--warn-text); background: var(--warn-soft); border-color: var(--warn-border); }
+.badge-danger { color: var(--danger-text); background: var(--danger-soft); border-color: currentColor; }
+.badges { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+
+/* Label / value pairs */
+dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--sp-3) var(--sp-5); margin: 0; align-items: baseline; }
+dt { color: var(--text-muted); font-size: var(--fs-sm); }
+dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Shown once: a secret that cannot be fetched again. Loud on purpose. */
+.secret {
+    max-width: 44rem;
+    margin: 0 0 var(--sp-5);
+    padding: var(--sp-5);
+    color: var(--warn-text);
+    background: var(--warn-soft);
+    border: 2px solid var(--warn-border);
+    border-radius: var(--r-lg);
+}
+.page .secret > h2 { display: flex; align-items: flex-start; gap: var(--sp-2); margin: 0 0 var(--sp-2); padding: 0; border: 0; font-size: var(--fs-lg); overflow-wrap: anywhere; }
+.secret > h2::before { mask-image: url("img/key.svg"); }
+.secret > p { margin-bottom: var(--sp-3); }
+.secret code {
+    display: block;
+    margin-bottom: var(--sp-4);
+    padding: var(--sp-3) var(--sp-4);
+    font-size: clamp(1.05rem, 4.6vw, 1.375rem);
+    font-weight: 600;
+    letter-spacing: .04em;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px dashed var(--warn-border);
+    border-radius: var(--r-md);
+    overflow-wrap: anywhere;
+    user-select: all;
+}
+.secret .form-actions { margin: 0; }
+.btn-copy::before { mask-image: url("img/copy.svg"); }
+.secret [role=status]:not(:empty) { margin: var(--sp-3) 0 0; padding: 0; color: inherit; background: none; border: 0; }
+.secret [role=status]:not(:empty)::before { color: inherit; mask-image: url("img/check.svg"); }
+
+/* A decision waiting on the page (link the account you just signed in to) */
+.decision {
+    max-width: 44rem;
+    margin: 0 0 var(--sp-5);
+    padding: var(--sp-5);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    border-radius: var(--r-lg);
+}
+.page .decision > h2 { margin: 0 0 var(--sp-2); padding: 0; border: 0; font-size: var(--fs-lg); }
+
+dialog {
+    width: calc(100% - 2 * var(--sp-4));
+    max-width: 27rem;
+    padding: var(--sp-5);
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-2);
+}
+dialog:focus-visible { outline: none; } /* the dialog itself is not a control; its buttons show the ring */
+dialog::backdrop { background: var(--backdrop); }
+dialog > p { margin-bottom: var(--sp-5); font-size: var(--fs-md); overflow-wrap: anywhere; }
+dialog .form-actions { justify-content: flex-end; }
+
+/* ---- 9 utilities ---------------------------------------------------------------------------- */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.muted { color: var(--text-muted); }
+
+/* ---- 10 motion: small, and off when the user asks for less ---------------------------------- */
+@keyframes spin { to { transform: rotate(1turn); } }
+
+@media (prefers-reduced-motion: no-preference) {
+    dialog[open] { animation: rise var(--dur-2) var(--ease-out); }
+    dialog[open]::backdrop { animation: fade var(--dur-2) var(--ease-out); }
+    .secret { animation: rise var(--dur-2) var(--ease-out); }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+    @keyframes fade { from { opacity: 0; } }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+    button[aria-busy=true]::before, .loading::before { animation: none; border-right-color: currentColor; opacity: .5; }
+}

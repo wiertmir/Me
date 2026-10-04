@@ -1,0 +1,131 @@
+@page "/signup"
+@attribute [ExcludeFromInteractiveRouting]
+@layout AuthLayout
+@inherits SsrPage
+@inject ILogger<SignUp> Logger
+
+<PageTitle>Create an account</PageTitle>
+
+@if (disabled)
+{
+    <h1>Create an account</h1>
+    <p role="alert">Sign-up is not available. Ask an administrator for an account.</p>
+    <p><a href="/signin@(CarryQuery(Challenge, ReturnUrl))">Sign in</a></p>
+}
+else if (sentTo is not null || Posted("resend"))
+{
+    <h1>Check your email to finish creating your account</h1>
+    <p>We've sent a link to confirm your address. Open it to finish.</p>
+    <ResendForm Email="@sentTo" />
+}
+else
+{
+    <h1>Create an account</h1>
+    <form method="post" @onsubmit="Submit" @formname="signup">
+        <AntiforgeryToken />
+        <div role="alert">@if (error is not null) { <p class="error">@error</p> }</div>
+        <p>
+            <label for="username">Username</label>
+            <input id="username" name="Input.Username" type="text" value="@Input?.Username" autocomplete="username" required
+                   aria-describedby="@(errors.ContainsKey("username") ? "username-error" : null)" />
+            @if (errors.TryGetValue("username", out var e1)) { <span id="username-error" class="error">@e1</span> }
+        </p>
+        <p>
+            <label for="email">Email</label>
+            <input id="email" name="Input.Email" type="email" value="@Input?.Email" autocomplete="email" required
+                   aria-describedby="@(errors.ContainsKey("email") ? "email-error" : null)" />
+            @if (errors.TryGetValue("email", out var e2)) { <span id="email-error" class="error">@e2</span> }
+        </p>
+        <p>
+            <label for="display">Display name (optional)</label>
+            <input id="display" name="Input.DisplayName" type="text" value="@Input?.DisplayName" autocomplete="name"
+                   aria-describedby="@(errors.ContainsKey("display") ? "display-error" : null)" />
+            @if (errors.TryGetValue("display", out var e3)) { <span id="display-error" class="error">@e3</span> }
+        </p>
+        <p>
+            <label for="password">Password</label>
+            <input id="password" name="Input.Password" type="password" autocomplete="new-password" required minlength="12"
+                   aria-describedby="@(errors.ContainsKey("password") ? "password-hint password-error" : "password-hint")" />
+            <span id="password-hint" class="hint">At least 12 characters.</span>
+            @if (errors.TryGetValue("password", out var e4)) { <span id="password-error" class="error">@e4</span> }
+        </p>
+        <p>
+            <label for="confirm">Confirm password</label>
+            <input id="confirm" name="Input.Confirm" type="password" autocomplete="new-password" required
+                   aria-describedby="@(errors.ContainsKey("confirm") ? "confirm-error" : null)" />
+            @if (errors.TryGetValue("confirm", out var e5)) { <span id="confirm-error" class="error">@e5</span> }
+        </p>
+        <button type="submit">Create account</button>
+    </form>
+    <p><a href="/signin@(CarryQuery(Challenge, ReturnUrl))">Already have an account? Sign in</a></p>
+}
+
+@code {
+    [SupplyParameterFromQuery] private string? Challenge { get; set; }
+    [SupplyParameterFromQuery] private string? ReturnUrl { get; set; }
+    [SupplyParameterFromForm(FormName = "signup")] private SignUpForm? Input { get; set; }
+
+    private string? error, sentTo;
+    private bool disabled;
+    private readonly Dictionary<string, string> errors = new();
+
+    private sealed class SignUpForm
+    {
+        public string? Username { get; set; }
+        public string? Email { get; set; }
+        public string? DisplayName { get; set; }
+        public string? Password { get; set; }
+        public string? Confirm { get; set; }
+    }
+
+    protected override void OnInitialized()
+    {
+        Input ??= new();
+        if (HttpContext.User.Identity?.IsAuthenticated == true) Nav.NavigateTo("/account");
+    }
+
+    private async Task Submit()
+    {
+        var f = Input!;
+        if (f.Password != f.Confirm) { errors["confirm"] = "The passwords do not match."; return; }
+
+        var r = await Api.SignUp(f.Username ?? "", f.Email ?? "", f.DisplayName, f.Password ?? "");
+        if (!r.Ok)
+        {
+            if (await Redirected(r, userScoped: false)) return;
+            switch (r.Code)
+            {
+                case "signup_disabled": disabled = true; break;
+                case "conflict": errors["username"] = "That username or email is already in use."; break;
+                case "validation": ShowValidation(r.Message ?? ""); break;
+                default: error = Describe(r); break;
+            }
+            return;
+        }
+        Logger.LogInformation("Signed up {Username}", r.Value!.User.Username);
+        if (r.Value.VerificationRequired) { sentTo = f.Email; return; }
+
+        var s = await Api.SignIn(f.Username ?? "", f.Password ?? "");
+        if (!s.Ok)
+        {
+            if (await Redirected(s, userScoped: false)) return;
+            error = Describe(s);
+            return;
+        }
+        await SessionPrincipal.SignIn(HttpContext, s.Value!.SessionToken, s.Value.User);
+        error = await Continue(s.Value.SessionToken, s.Value.User.MustChangePassword, Challenge, ReturnUrl);
+    }
+
+    // The service names the offending field in its message; match on that, else show it at the top.
+    private void ShowValidation(string message)
+    {
+        var m = message.ToLowerInvariant();
+        var field = m.Contains("username") ? "username"
+            : m.Contains("email") ? "email"
+            : m.Contains("display name") ? "display"
+            : m.Contains("password") ? "password"
+            : null;
+        if (field is null) error = message.Length > 0 ? message : "Check the details and try again.";
+        else errors[field] = message;
+    }
+}

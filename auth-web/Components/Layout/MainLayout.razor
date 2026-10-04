@@ -1,0 +1,30 @@
+@inherits LayoutComponentBase
+
+<header class="site-header">
+    <div class="site-header-inner">
+        <a class="brand" href="/account"><img src="/img/mark.svg" alt="" width="28" height="28" /><span>Me</span></a>
+        <AuthorizeView>
+            <Authorized>
+                <nav class="site-nav" aria-label="Account">
+                    <NavLink href="/account" Match="NavLinkMatch.All">Profile</NavLink>
+                    <NavLink href="/account/security">Security</NavLink>
+                    <NavLink href="/account/app-passwords">App passwords</NavLink>
+                    <AuthorizeView Roles="admin" Context="admin"><NavLink href="/admin/users">Users</NavLink></AuthorizeView>
+                </nav>
+                <div class="who">
+                    <span class="who-name"><span class="visually-hidden">Signed in as </span>@context.User.Identity?.Name</span>
+                    <a href="/signout">Sign out</a>
+                </div>
+            </Authorized>
+        </AuthorizeView>
+    </div>
+</header>
+
+<main class="page">
+    @Body
+</main>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href=".">Reload</a>
+</div>

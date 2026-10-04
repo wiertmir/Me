@@ -1,0 +1,23 @@
+@page "/session-expired"
+@attribute [ExcludeFromInteractiveRouting]
+@layout AuthLayout
+@inherits SsrPage
+
+<PageTitle>Session expired</PageTitle>
+<h1>Session expired</h1>
+
+@code {
+    // Clears the cookie only when the service itself says the session is gone, so a link here cannot sign anyone out.
+    protected override async Task OnInitializedAsync()
+    {
+        if (SessionToken is not { } token)
+        {
+            await HttpContext.SignOutAsync();
+            Nav.NavigateTo("/signin");
+            return;
+        }
+        var r = await Api.Me(token);
+        if (r.Ok) Nav.NavigateTo("/account");
+        else if (!await Redirected(r)) Nav.NavigateTo("/unavailable"); // unexpected: keep the cookie
+    }
+}

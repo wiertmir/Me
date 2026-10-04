@@ -1,0 +1,37 @@
+@page "/social/complete"
+@attribute [ExcludeFromInteractiveRouting]
+@layout AuthLayout
+@inherits SsrPage
+@inject ILogger<SocialComplete> Logger
+
+<PageTitle>Signing in</PageTitle>
+<h1>Signing in</h1>
+
+@if (error is not null)
+{
+    <p role="alert" class="error">@error</p>
+    <p><a href="/signin">Back to sign in</a></p>
+}
+
+@code {
+    [SupplyParameterFromQuery] private string? Ticket { get; set; }
+
+    private string? error;
+
+    // A GET that signs in: inherent to the redirect flow. The one-time, 60-second ticket is what protects it.
+    protected override async Task OnInitializedAsync()
+    {
+        if (string.IsNullOrEmpty(Ticket)) { Nav.NavigateTo("/signin?error=social_failed"); return; }
+        var r = await Api.ExchangeSocialTicket(Ticket);
+        if (!r.Ok)
+        {
+            if (await Redirected(r, userScoped: false)) return;
+            Logger.LogWarning("Social ticket exchange failed: {Code}", r.Code);
+            Nav.NavigateTo("/signin?error=social_failed");
+            return;
+        }
+        await SessionPrincipal.SignIn(HttpContext, r.Value!.SessionToken, r.Value.User);
+        Logger.LogInformation("Signed in {Username} via social", r.Value.User.Username);
+        error = await Continue(r.Value.SessionToken, r.Value.User.MustChangePassword, r.Value.Challenge, null);
+    }
+}

@@ -1,0 +1,90 @@
+@inherits ApiComponent
+
+<section aria-labelledby="linked-h">
+    <h2 id="linked-h">Linked sign-in methods</h2>
+    <p>Anyone who can sign in to a linked account can sign in here. Remove any you don't recognise.</p>
+    <div role="status">@notice</div>
+    <div role="alert" class="error">@error</div>
+    @if (failed) { <LoadFailed What="your linked sign-in methods" OnRetry="Reload" /> }
+    else if (rows is null) { <p class="loading">Loading…</p> }
+    else if (rows.Count == 0) { <p class="empty">No sign-in providers are configured.</p> }
+    else
+    {
+        <table>
+            <caption>Linked sign-in methods</caption>
+            <thead><tr><th scope="col">Provider</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+            <tbody>
+            @foreach (var (provider, identity) in rows)
+            {
+                var name = Pretty(provider);
+                <tr>
+                    <th scope="row">@name</th>
+                    @if (identity is null)
+                    {
+                        <td data-label="Status"><span class="badge">Not linked</span></td>
+                        <td class="actions"><button type="button" @onclick="() => Link(provider)">Link<span class="visually-hidden"> @name</span></button></td>
+                    }
+                    else
+                    {
+                        <td data-label="Status"><span class="badge badge-ok">Linked</span>@(string.IsNullOrEmpty(identity.Email) ? "" : $" as {identity.Email}") since <Time Value="identity.CreatedAt" /></td>
+                        <td class="actions"><button type="button" @onclick="() => AskUnlink(provider)">Unlink<span class="visually-hidden"> @name</span></button></td>
+                    }
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+</section>
+
+<ConfirmDialog Request="pending" OnDone="() => pending = null" />
+
+@code {
+    private List<(string Provider, Identity? Identity)>? rows;
+    private bool failed;
+    private string? notice, error;
+    private ConfirmRequest? pending;
+
+    protected override Task OnInitializedAsync() => Reload();
+
+    private static string Pretty(string p) => p switch
+    {
+        "github" => "GitHub",
+        "google" => "Google",
+        "" => p,
+        _ => char.ToUpperInvariant(p[0]) + p[1..],
+    };
+
+    public async Task Reload()
+    {
+        failed = false;
+        var providers = await Api.Providers();
+        if (Nav.Handle(providers)) return;
+        var ids = await Call(t => Api.Identities(t));
+        if (ids is null) return;
+        if (!providers.Ok || !ids.Ok) { failed = true; return; }
+        // Configured providers, plus any linked one that was since removed from the config (so it can be unlinked).
+        var names = providers.Value!.Union(ids.Value!.Select(i => i.Provider)).ToList();
+        rows = names.Select(n => (n, ids.Value!.FirstOrDefault(i => i.Provider == n))).ToList();
+    }
+
+    private async Task Link(string provider)
+    {
+        notice = error = null;
+        var r = await Call(t => Api.LinkIntent(t, provider));
+        if (r is null) return;
+        if (r.Ok) Nav.NavigateTo(r.Value!.StartUrl, forceLoad: true); else error = Describe(r);
+    }
+
+    private void AskUnlink(string provider) =>
+        pending = new($"Unlink {Pretty(provider)} from your account? You will no longer be able to sign in with it. Other devices will be signed out.", "Unlink", () => Unlink(provider));
+
+    private async Task Unlink(string provider)
+    {
+        notice = error = null;
+        var r = await Call(t => Api.Unlink(t, provider));
+        if (r is null) return;
+        if (r.Ok) notice = $"{Pretty(provider)} unlinked.";
+        else error = r.Code == "last_sign_in_method" ? "You can't remove your only way to sign in. Set a password first." : Describe(r);
+        await Reload();
+    }
+}

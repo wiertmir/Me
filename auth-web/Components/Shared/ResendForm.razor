@@ -1,0 +1,33 @@
+@inherits SsrPage
+
+<form method="post" @onsubmit="Submit" @formname="resend">
+    <AntiforgeryToken />
+    <p>
+        <label for="resend-email">Email address</label>
+        <input id="resend-email" name="Input.Email" type="email" value="@Input?.Email" autocomplete="email" required />
+    </p>
+    <button type="submit">Resend email</button>
+    <div role="status">@if (sent) { <p>If that address needs verifying, we've sent a new link.</p> }@if (error is not null) { <p class="error">@error</p> }</div>
+</form>
+
+@code {
+    [SupplyParameterFromForm(FormName = "resend")] private ResendInput? Input { get; set; }
+
+    /// <summary>Pre-fills the address field.</summary>
+    [Parameter] public string? Email { get; set; }
+
+    private bool sent;
+    private string? error;
+
+    private sealed class ResendInput { public string? Email { get; set; } }
+
+    protected override void OnInitialized() => Input ??= new() { Email = Email };
+
+    private async Task Submit()
+    {
+        var r = await Api.ResendVerification(Input?.Email ?? "");
+        if (r.Code == "rate_limited") { error = Describe(r); return; }
+        if (await Redirected(r, userScoped: false)) return;
+        sent = true; // the same answer whether or not the address exists
+    }
+}
