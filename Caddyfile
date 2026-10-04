@@ -19,6 +19,19 @@
 		reverse_proxy 127.0.0.1:8081
 	}
 
+	# calendar-service's API description and its documentation page, published so that they can be
+	# read from other machines while the project is in development. Neither asks for a sign-in; they
+	# show the shape of the API, no data. Remove these two blocks to keep them internal. Listed
+	# before the /calendar/* rule, which would otherwise send them to the service as they are.
+	handle /calendar/openapi.json {
+		rewrite * /api/openapi.json
+		reverse_proxy 127.0.0.1:8083
+	}
+	handle /calendar/docs {
+		rewrite * /api/docs
+		reverse_proxy 127.0.0.1:8083
+	}
+
 	# calendar-service: the public API. The two headers are how internal callers identify themselves,
 	# so a client must not be able to send them.
 	handle /calendar/* {

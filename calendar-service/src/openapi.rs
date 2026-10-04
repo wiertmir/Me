@@ -48,6 +48,8 @@ impl Modify for SecuritySchemes {
     }
 }
 
+// The document URL is relative, so the page also works where the Caddyfile publishes the pair under
+// other paths (/calendar/docs beside /calendar/openapi.json).
 const DOCS_HTML: &str = r#"<!doctype html>
 <html>
 <head>
@@ -56,7 +58,7 @@ const DOCS_HTML: &str = r#"<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
 </head>
 <body>
-<script id="api-reference" data-url="/api/openapi.json"></script>
+<script id="api-reference" data-url="openapi.json"></script>
 <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
 </body>
 </html>"#;

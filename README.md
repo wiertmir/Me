@@ -413,6 +413,12 @@ internal address: <http://127.0.0.1:8081/api/docs> for `auth-service`,
 public CDN (`cdn.jsdelivr.net`), so it needs internet access in the browser. Neither endpoint asks
 for a secret; do not expose `/api/*` publicly (the Caddyfile does not).
 
+While the project is in development the Caddyfile publishes the two of `calendar-service` under
+other paths, so that they can be read from other machines: `https://<host>/calendar/docs` (the
+page) and `https://<host>/calendar/openapi.json`. Anyone who can reach the site can read them
+without signing in; they describe the API and contain no data. Remove the two `handle` blocks
+marked for this in the Caddyfile to keep them internal.
+
 ## Logging
 
 All processes log to the console.

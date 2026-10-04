@@ -63,7 +63,10 @@ headers, so only a caller on the internal network can use the service-secret
 way in (see "Who is calling").
 
 `/api/docs` and `/api/openapi.json` are served by calendar-service on its
-internal address only; the Caddyfile already answers `/api/*` with 404.
+internal address; the Caddyfile already answers `/api/*` with 404. While the
+project is in development the Caddyfile also publishes them, without sign-in,
+as `/calendar/docs` and `/calendar/openapi.json` (added 2026-10-04 at the
+owner's request, to read the documentation from other machines).
 
 ## common
 
