@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use auth_service::{Config, app, build_state, logging, reset_password};
+use auth_service::{Config, app, build_state, reset_password};
+use common::logging;
 
 const USAGE: &str =
     "usage: auth-service [CONFIG]\n       auth-service CONFIG reset-password USERNAME";
@@ -19,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(username) = reset_user {
         // Recovery command: no server is started. Standard output carries exactly one line, the
         // password; the log and the explanation go to standard error.
-        logging::init_stderr(&cfg.log);
+        logging::init_stderr(&cfg.log, "auth-service");
         let password = reset_password(&cfg, username)?;
         eprintln!(
             "One-time password for {username} (below). Sign in with it; you will be asked to choose a new one."
@@ -27,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
         println!("{password}");
         return Ok(());
     }
-    logging::init(&cfg.log);
+    logging::init(&cfg.log, "auth-service");
     let listen = cfg.listen;
     let (state, seed_password) = build_state(cfg)?;
     if let Some(password) = seed_password {

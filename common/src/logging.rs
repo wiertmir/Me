@@ -21,20 +21,45 @@ use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{EnvFilter, Layer, fmt::time::ChronoLocal, prelude::*};
 
-use crate::config::{LogConfig, LogFormat};
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    #[default]
+    Pretty,
+    Json,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LogConfig {
+    pub format: LogFormat,
+    pub level: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            format: LogFormat::Pretty,
+            level: "debug".into(),
+        }
+    }
+}
 
 static REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
-pub fn init(cfg: &LogConfig) {
-    init_to(cfg, std::io::stdout)
+/// `service` names this process in exported traces.
+pub fn init(cfg: &LogConfig, service: &'static str) {
+    init_to(cfg, service, std::io::stdout)
 }
 
 /// For one-shot commands whose standard output is their result: the log goes to standard error.
-pub fn init_stderr(cfg: &LogConfig) {
-    init_to(cfg, std::io::stderr)
+pub fn init_stderr(cfg: &LogConfig, service: &'static str) {
+    init_to(cfg, service, std::io::stderr)
 }
 
-fn init_to<W>(cfg: &LogConfig, writer: W)
+fn init_to<W>(cfg: &LogConfig, service: &'static str, writer: W)
 where
     W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
 {
@@ -58,13 +83,13 @@ where
     tracing_subscriber::registry()
         .with(filter)
         .with(fmt)
-        .with(otel_tracer().map(|t| tracing_opentelemetry::layer().with_tracer(t)))
+        .with(otel_tracer(service).map(|t| tracing_opentelemetry::layer().with_tracer(t)))
         .init();
 }
 
 /// Spans are exported over OTLP (gRPC) when the standard `OTEL_EXPORTER_OTLP_ENDPOINT` variable is set,
 /// as .NET Aspire does for the processes it starts; without it nothing is collected.
-fn otel_tracer() -> Option<opentelemetry_sdk::trace::Tracer> {
+fn otel_tracer(service: &'static str) -> Option<opentelemetry_sdk::trace::Tracer> {
     std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT")?;
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
@@ -74,14 +99,10 @@ fn otel_tracer() -> Option<opentelemetry_sdk::trace::Tracer> {
     // ponytail: no flush on shutdown, the last batch (up to OTEL_BSP_SCHEDULE_DELAY) is lost when the
     // process is stopped; add graceful shutdown if those spans matter
     let provider = SdkTracerProvider::builder()
-        .with_resource(
-            Resource::builder()
-                .with_service_name("auth-service")
-                .build(),
-        )
+        .with_resource(Resource::builder().with_service_name(service).build())
         .with_span_processor(RequestSpans(BatchSpanProcessor::builder(exporter).build()))
         .build();
-    Some(provider.tracer("auth-service"))
+    Some(provider.tracer(service))
 }
 
 /// Gives the request spans their exported name ("GET /api/users") and kind. Done here and not with
@@ -133,7 +154,7 @@ pub fn for_log(s: &str) -> String {
 
 /// The route template (`/api/auth-requests/{challenge}`) when a route matched, so path parameters that
 /// are secrets never reach the logs; the raw path only for unmatched requests.
-pub(crate) fn logged_path(req: &Request) -> String {
+pub fn logged_path(req: &Request) -> String {
     req.extensions()
         .get::<MatchedPath>()
         .map_or_else(|| req.uri().path().to_owned(), |m| m.as_str().to_owned())

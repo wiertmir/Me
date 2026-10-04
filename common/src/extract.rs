@@ -4,9 +4,10 @@ use axum::{
     extract::{FromRequest, FromRequestParts, Path, Request},
     http::{StatusCode, request::Parts},
 };
-use common::ApiError;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
+
+use crate::ApiError;
 
 /// `Json<T>` for `/api/*` request bodies. Malformed JSON, wrong field types, missing fields and a wrong
 /// content type are all 422 `validation`; the message never echoes the body.

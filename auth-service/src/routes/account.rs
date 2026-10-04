@@ -3,14 +3,13 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use common::{ApiError, ErrorBody};
+use common::{ApiError, ApiJson, ErrorBody, PathId};
 use serde::Deserialize;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::{
     AppState,
-    extract::{ApiJson, PathId},
     sessions::{self, PendingUser, SessionInfo, SessionUser},
     social_store::{self, Identity, Unlink},
     users::{self, User},

@@ -297,3 +297,15 @@ async fn extractor_reads_bearer_header() {
     assert_eq!(r.status(), 200);
     assert_eq!(r.text().await.unwrap(), "alice");
 }
+
+#[tokio::test]
+async fn explicit_jwks_url_is_used() {
+    let key = TestKey::new("k1");
+    let srv = serve_jwks(vec![key.jwk.clone()]).await;
+    let v = TokenVerifier::new("https://issuer.example", AUD)
+        .with_jwks_url(format!("{}/.well-known/jwks.json", srv.issuer));
+    v.verify(&key.token("https://issuer.example", AUD, 300))
+        .await
+        .unwrap();
+    assert_eq!(srv.hits.load(Ordering::SeqCst), 1);
+}

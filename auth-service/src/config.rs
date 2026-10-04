@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use common::LogConfig;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -12,30 +13,6 @@ pub enum SignupMode {
     #[default]
     Open,
     Disabled,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    #[default]
-    Pretty,
-    Json,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct LogConfig {
-    pub format: LogFormat,
-    pub level: String,
-}
-
-impl Default for LogConfig {
-    fn default() -> Self {
-        Self {
-            format: LogFormat::Pretty,
-            level: "debug".into(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -157,34 +134,7 @@ impl Config {
     /// Reads a TOML file, then applies `ME_AUTH__<FIELD>` environment overrides
     /// (`__` descends into tables, e.g. `ME_AUTH__LOG__LEVEL=debug`).
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
-        Self::from_toml(&text, std::env::vars())
-    }
-
-    // ponytail: env overrides are strings only (fine for secrets, urls, levels); typed values go in the file
-    pub fn from_toml(
-        text: &str,
-        env: impl IntoIterator<Item = (String, String)>,
-    ) -> anyhow::Result<Self> {
-        let mut doc: toml::Table = text.parse()?;
-        for (key, value) in env {
-            let Some(rest) = key.strip_prefix("ME_AUTH__") else {
-                continue;
-            };
-            let parts: Vec<String> = rest.split("__").map(str::to_lowercase).collect();
-            let (last, parents) = parts.split_last().expect("split yields at least one part");
-            let mut table = &mut doc;
-            for p in parents {
-                table = table
-                    .entry(p.clone())
-                    .or_insert_with(|| toml::Value::Table(Default::default()))
-                    .as_table_mut()
-                    .ok_or_else(|| anyhow::anyhow!("{key}: {p} is not a table"))?;
-            }
-            table.insert(last.clone(), toml::Value::String(value));
-        }
-        Ok(doc.try_into()?)
+        common::config::load(path, "ME_AUTH__")
     }
 
     /// Config for integration tests: ephemeral port, temp data dir, known secret.
@@ -230,9 +180,9 @@ seed_username = "wiertmir"
             ("ME_AUTH__LOG__FORMAT".to_string(), "json".to_string()),
             ("UNRELATED".to_string(), "x".to_string()),
         ];
-        let cfg = Config::from_toml(BASE, env).unwrap();
+        let cfg = common::config::from_toml::<Config>(BASE, "ME_AUTH__", env).unwrap();
         assert_eq!(cfg.service_secret, "from-env");
-        assert_eq!(cfg.log.format, LogFormat::Json);
+        assert_eq!(cfg.log.format, common::LogFormat::Json);
         assert_eq!(cfg.audience, "me-api");
         assert_eq!(cfg.signup, SignupMode::Open);
     }
