@@ -137,9 +137,9 @@ events, of which at most 1,000 are repeating ones.
 
 For the home-network setup (the scripts, the app host and Kubernetes) do this once before the first
 start of `calendar-service`. The scripts `1-run-local-auth.sh`, `2-run-local-auth-web.sh`,
-`3-run-caddy.sh` and `4-run-local-calendar.sh` start the four processes of that setup, each in its
-own terminal (`4-run-local-calendar.sh` runs `calendar-service`, like `1-run-local-auth.sh` runs
-`auth-service`):
+`3-run-local-calendar.sh` and `4-run-caddy.sh` start the four processes of that setup, each in its
+own terminal and in that order, Caddy last (`3-run-local-calendar.sh` runs `calendar-service`, like
+`1-run-local-auth.sh` runs `auth-service`):
 
 - add `ME_CALENDAR__SERVICE_SECRET=<a secret>` to `.env`;
 - copy `calendar-service/config.example.toml` to `calendar-service/config.local.toml`, set `issuer`

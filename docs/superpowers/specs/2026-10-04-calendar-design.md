@@ -306,7 +306,8 @@ convention, and the same upgrade limitation, as auth-service.
 
 ## Running it
 
-- `4-run-local-calendar.sh` beside the existing scripts, with
+- `3-run-local-calendar.sh` beside the existing scripts (Caddy's becomes
+  `4-run-caddy.sh`, so the numbers are the start order), with
   `calendar-service/config.example.toml`.
 - `calendar-service/Dockerfile`; a fourth application container in
   `k8s/me.yaml`; `run-kubernetes.sh` builds and loads its image.
