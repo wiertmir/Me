@@ -54,7 +54,8 @@ pub struct TaskInput {
     /// Up to 5 minutes-before-due values, each 0 to 40,320; needs `due`.
     #[serde(default)]
     reminders: Vec<u32>,
-    /// Not yet supported: must be absent or null.
+    /// Makes this a subtask of that task, which must be a task of the same list that is not itself a subtask;
+    /// a subtask cannot have an `rrule`. On replace, absent or equal to the stored value.
     #[serde(default)]
     parent_id: Option<Uuid>,
     /// RFC 5545 rule body (no `RRULE:` prefix), up to 500 characters; DAILY or longer; needs `due`.
@@ -174,8 +175,8 @@ fn check(inp: &TaskInput) -> ApiResult<Option<i64>> {
     if inp.reminders.len() > 5 || inp.reminders.iter().any(|&m| m > 40_320) {
         return Err(invalid("reminders: at most 5, each 0 to 40320 minutes"));
     }
-    if inp.parent_id.is_some() {
-        return Err(invalid("parent_id is not supported yet"));
+    if inp.parent_id.is_some() && inp.rrule.is_some() {
+        return Err(invalid("a subtask cannot have an rrule"));
     }
     let Some(due) = &inp.due else {
         if inp.tz.is_some() {
@@ -242,6 +243,15 @@ fn load(c: &Connection, user: Uuid, id: Uuid) -> rusqlite::Result<Option<Task>> 
     .optional()
 }
 
+/// Live subtasks of `parent`, oldest first.
+pub(crate) fn subtasks(c: &Connection, parent: Uuid) -> rusqlite::Result<Vec<Task>> {
+    c.prepare(&format!(
+        "SELECT {COLUMNS} FROM tasks WHERE parent_id = ?1 AND deleted = 0 ORDER BY created_at, rowid"
+    ))?
+    .query_map([parent.to_string()], from_row)?
+    .collect()
+}
+
 /// Bumps the list's sync token and returns the new value, the revision of the write that follows.
 /// The caller has checked that the list is the user's.
 pub(crate) fn bump(c: &Connection, list: Uuid) -> rusqlite::Result<i64> {
@@ -306,7 +316,7 @@ const ID_PARAMS: &str = "UUID";
     (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
     (status = 409, description = "`conflict`: the uid is in use, or the list already holds 10,000 tasks", body = ErrorBody),
-    (status = 422, description = "`validation`: malformed body, a limit exceeded, bad due or zone, or bad rrule", body = ErrorBody),
+    (status = 422, description = "`validation`: malformed body, a limit exceeded, bad due or zone, bad rrule, or a parent_id that is not a task of this list or is itself a subtask, or an rrule on a subtask", body = ErrorBody),
 )
 )]
 async fn create_task(
@@ -328,6 +338,20 @@ async fn create_task(
             )
             .into());
         }
+        if let Some(p) = inp.parent_id {
+            let usable: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1 AND list_id = ?2 AND deleted = 0
+                    AND parent_id IS NULL)",
+                params![p.to_string(), list.to_string()],
+                |r| r.get(0),
+            )?;
+            if !usable {
+                return Err(invalid(
+                    "parent_id must name a task of this list that is not a subtask",
+                )
+                .into());
+            }
+        }
         let id = Uuid::new_v4();
         let uid = inp.uid.clone().unwrap_or_else(|| id.to_string());
         let taken: bool = c.query_row(
@@ -346,13 +370,14 @@ async fn create_task(
         let revision = bump(c, list)?;
         c.execute(
             "INSERT INTO tasks (id, list_id, uid, summary, description, due, tz, priority, completed_at,
-                reminders, rrule, recurrence_id, revision, due_utc, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+                reminders, parent_id, rrule, recurrence_id, revision, due_utc, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16)",
             params![
                 id.to_string(), list.to_string(), uid, inp.summary, inp.description, inp.due, inp.tz,
                 inp.priority, inp.completed.then_some(now),
                 serde_json::to_string(&inp.reminders).unwrap_or_default(),
-                inp.rrule, inp.rrule.as_ref().map(|_| id.to_string()), revision, due_utc, now,
+                inp.parent_id.map(|p| p.to_string()), inp.rrule,
+                inp.rrule.as_ref().map(|_| id.to_string()), revision, due_utc, now,
             ],
         )?;
         Ok(load(c, user, id)?.expect("row just inserted"))
@@ -426,8 +451,13 @@ async fn replace_task(
     let task = atomically(&s, |c| {
         let old = load(c, user, id)?.ok_or_else(not_found)?;
         check_if_match(&headers, &old.etag)?;
-        if inp.uid.as_ref().is_some_and(|u| *u != old.uid) {
+        if inp.uid.as_ref().is_some_and(|u| *u != old.uid)
+            || inp.parent_id.is_some_and(|p| Some(p) != old.parent_id)
+        {
             return Err(invalid("uid and parent_id cannot change").into());
+        }
+        if old.parent_id.is_some() && inp.rrule.is_some() {
+            return Err(invalid("a subtask cannot have an rrule").into());
         }
         let completed_at = match (old.completed_at, inp.completed) {
             (Some(t), true) => Some(t.timestamp()),
@@ -468,7 +498,7 @@ async fn replace_task(
 
 /// Delete a task
 ///
-/// With `If-Match`, the delete happens only if it equals the current etag.
+/// Deletes its subtasks too. With `If-Match`, the delete happens only if it equals the current etag.
 #[utoipa::path(
     delete, path = "/tasks/v1/tasks/{id}",
     tag = "tasks",
@@ -496,11 +526,14 @@ async fn delete_task(
     let list = atomically(&s, |c| {
         let old = load(c, user, id)?.ok_or_else(not_found)?;
         check_if_match(&headers, &old.etag)?;
-        let revision = bump(c, old.list_id)?;
-        c.execute(
-            "UPDATE tasks SET deleted = 1, revision = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id.to_string(), revision, now],
-        )?;
+        let doomed = subtasks(c, id)?.into_iter().map(|t| t.id);
+        for t in std::iter::once(id).chain(doomed) {
+            let revision = bump(c, old.list_id)?;
+            c.execute(
+                "UPDATE tasks SET deleted = 1, revision = ?2, updated_at = ?3 WHERE id = ?1",
+                params![t.to_string(), revision, now],
+            )?;
+        }
         Ok(old.list_id)
     })?;
     tracing::info!(event = "task_deleted", user_id = %user, list_id = %list, task_id = %id);
