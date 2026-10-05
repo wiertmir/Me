@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State, rejection::QueryRejection},
     http::{HeaderMap, StatusCode, header},
 };
 use chrono::{DateTime, Duration, Utc};
@@ -22,6 +22,7 @@ pub(crate) const COLUMNS: &str = "id, list_id, uid, summary, description, due, t
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create_task))
+        .routes(routes!(list_changes))
         .routes(routes!(get_task, replace_task, delete_task))
 }
 
@@ -89,6 +90,32 @@ pub struct Task {
     etag: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+/// The list's stored tasks changed since a sync token.
+#[derive(Serialize, ToSchema)]
+pub struct Changes {
+    /// The list's current token; send it as `since` next time.
+    sync_token: i64,
+    tasks: Vec<Change>,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum Change {
+    Task(Box<Task>),
+    /// A deleted task: only what a client needs to drop it.
+    Deleted {
+        id: Uuid,
+        uid: String,
+        /// Always `true`.
+        deleted: bool,
+    },
+}
+
+#[derive(Deserialize)]
+struct ChangesQuery {
+    since: Option<String>,
 }
 
 // ---- errors ----
@@ -538,4 +565,98 @@ async fn delete_task(
     })?;
     tracing::info!(event = "task_deleted", user_id = %user, list_id = %list, task_id = %id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- changes feed ----
+
+/// The stored tasks of `list` with `revision > since` (tombstones included), or the live ones without
+/// `since`, by revision then id; with the list's token, read together.
+// ponytail: tombstones are kept forever; prune by age once a database grows
+// ponytail: the answer is unpaginated and built under the database lock (at most 10,000 live tasks, plus
+// every tombstone); add a `limit` and a `next` token to the feed if one answer gets large or holds the lock long
+fn changes_since(
+    c: &Connection,
+    user: Uuid,
+    list: Uuid,
+    since: Option<i64>,
+) -> rusqlite::Result<ApiResult<Changes>> {
+    let Some(l) = lists::owned(c, user, list)? else {
+        return Ok(Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such list",
+        )));
+    };
+    if since.is_some_and(|n| n > l.sync_token) {
+        return Ok(Err(ApiError::new(
+            StatusCode::GONE,
+            "sync_token_invalid",
+            "since is beyond the list's sync token; list without since",
+        )));
+    }
+    let tasks = c
+        .prepare(&format!(
+            "SELECT {COLUMNS}, deleted FROM tasks WHERE list_id = ?1
+             AND ((?2 IS NULL AND deleted = 0) OR revision > ?2) ORDER BY revision, id"
+        ))?
+        .query_map(params![list.to_string(), since], |r| {
+            let deleted: bool = r.get(16)?;
+            let t = from_row(r)?;
+            Ok(if deleted {
+                Change::Deleted {
+                    id: t.id,
+                    uid: t.uid,
+                    deleted,
+                }
+            } else {
+                Change::Task(Box::new(t))
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(Ok(Changes {
+        sync_token: l.sync_token,
+        tasks,
+    }))
+}
+
+/// List changes
+///
+/// Without `since`, the list's live tasks. With `since`, every stored task changed after that token,
+/// deleted ones as `{id, uid, deleted: true}`, by revision.
+#[utoipa::path(
+    get, path = "/tasks/v1/lists/{id}/changes",
+    tag = "tasks",
+    params(
+        ("id" = String, Path, description = "the list's UUID"),
+        ("since" = Option<i64>, Query, description = "a `sync_token` from an earlier answer, 0 or more"),
+        ("X-User-Id" = Option<Uuid>, Header, description = "The user to act for; required with `X-Service-Secret`"),
+    ),
+    security(("service_secret" = []), ("access_token" = [])),
+    responses(
+    (status = 200, description = "the changes and the list's current token", body = Changes),
+    (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
+    (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
+    (status = 410, description = "`sync_token_invalid`: `since` is beyond the list's token; list without `since`", body = ErrorBody),
+    (status = 422, description = "`validation`: `since` is not a non-negative integer", body = ErrorBody),
+)
+)]
+async fn list_changes(
+    State(s): State<AppState>,
+    User(user): User,
+    PathId(list): PathId,
+    query: Result<Query<ChangesQuery>, QueryRejection>,
+) -> ApiResult<Json<Changes>> {
+    let Query(q) = query.map_err(|_| invalid("the query string is malformed"))?;
+    let since = q
+        .since
+        .map(|v| {
+            let digits = !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit());
+            digits
+                .then(|| v.parse::<i64>().ok())
+                .flatten()
+                .ok_or_else(|| invalid("since must be a non-negative integer"))
+        })
+        .transpose()?;
+    Ok(Json(s.db.with(|c| changes_since(c, user, list, since))??))
 }
