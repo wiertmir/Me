@@ -23,6 +23,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create_task))
         .routes(routes!(list_changes))
+        .routes(routes!(list_by_uid))
         .routes(routes!(get_task, replace_task, delete_task))
 }
 
@@ -116,6 +117,11 @@ pub enum Change {
 #[derive(Deserialize)]
 struct ChangesQuery {
     since: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UidQuery {
+    uid: Option<String>,
 }
 
 // ---- errors ----
@@ -679,4 +685,61 @@ async fn list_changes(
         })
         .transpose()?;
     Ok(Json(s.db.with(|c| changes_since(c, user, list, since))??))
+}
+
+// ---- lookup by uid ----
+
+fn by_uid_of(
+    c: &Connection,
+    user: Uuid,
+    list: Uuid,
+    uid: &str,
+) -> rusqlite::Result<ApiResult<Vec<Task>>> {
+    if lists::owned(c, user, list)?.is_none() {
+        return Ok(Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such list",
+        )));
+    }
+    Ok(Ok(c
+        .prepare(&format!(
+            "SELECT {COLUMNS} FROM tasks WHERE list_id = ?1 AND uid = ?2 AND deleted = 0"
+        ))?
+        .query_map(params![list.to_string(), uid], from_row)?
+        .collect::<rusqlite::Result<_>>()?))
+}
+
+/// Find tasks by uid
+///
+/// The live task of the list with this `uid`, as a list of zero or one.
+#[utoipa::path(
+    get, path = "/tasks/v1/lists/{id}/by-uid",
+    tag = "tasks",
+    params(
+        ("id" = String, Path, description = "the list's UUID"),
+        ("uid" = String, Query, description = "the uid to look for; 1 or more characters, percent-encoded"),
+        ("X-User-Id" = Option<Uuid>, Header, description = "The user to act for; required with `X-Service-Secret`"),
+    ),
+    security(("service_secret" = []), ("access_token" = [])),
+    responses(
+        (status = 200, description = "the matching tasks, possibly none", body = Vec<Task>),
+        (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+        (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
+        (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
+        (status = 422, description = "`validation`: `uid` is missing or empty", body = ErrorBody),
+    )
+)]
+async fn list_by_uid(
+    State(s): State<AppState>,
+    User(user): User,
+    PathId(list): PathId,
+    query: Result<Query<UidQuery>, QueryRejection>,
+) -> ApiResult<Json<Vec<Task>>> {
+    let Query(q) = query.map_err(|_| invalid("the query string is malformed"))?;
+    let uid = q
+        .uid
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| invalid("uid is required"))?;
+    Ok(Json(s.db.with(|c| by_uid_of(c, user, list, &uid))??))
 }
