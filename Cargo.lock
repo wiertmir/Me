@@ -345,6 +345,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "chrono",
+ "chrono-tz",
  "jsonwebtoken",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -352,6 +353,7 @@ dependencies = [
  "p256",
  "rand 0.10.3",
  "reqwest",
+ "rrule",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2467,6 +2469,32 @@ checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "tasks-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "common",
+ "jsonwebtoken",
+ "p256",
+ "rand 0.10.3",
+ "reqwest",
+ "rrule",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "utoipa-axum",
+ "uuid",
 ]
 
 [[package]]
