@@ -219,7 +219,7 @@ configuration. It keeps nothing on disk, so there is no data directory.
 
 | Key               | Meaning                                                                      |
 |-------------------|------------------------------------------------------------------------------|
-| `listen`          | Address to listen on (default `127.0.0.1:8085`)                              |
+| `listen`          | Address to listen on; required (`127.0.0.1:8085` in the example)            |
 | `auth_url`        | Internal address of `auth-service` (`http://127.0.0.1:8081`)                 |
 | `calendar_url`    | Internal address of `calendar-service` (`http://127.0.0.1:8083`)             |
 | `tasks_url`       | Internal address of `tasks-service` (`http://127.0.0.1:8084`)                |
@@ -303,16 +303,16 @@ An account created through a provider has no password. It can set one on the Sec
 
 The [`Caddyfile`](Caddyfile) serves the processes on one origin and provides TLS:
 
-| Path                                      | Goes to                          |
-|-------------------------------------------|----------------------------------|
-| `/social/complete`                        | auth-web (`127.0.0.1:5080`)      |
-| `/oauth/*`, other `/.well-known/*`, `/social/*` | auth-service (`127.0.0.1:8081`)  |
-| `/calendar/*`                             | calendar-service (`127.0.0.1:8083`) |
-| `/tasks/*`                                | tasks-service (`127.0.0.1:8084`) |
-| `/dav`, `/dav/*`                          | caldav-bridge (`127.0.0.1:8085`) |
-| `/.well-known/caldav`                     | redirect (301) to `/dav/`        |
-| `/api/*`                                  | nothing: answered with 404       |
-| everything else                           | auth-web (`127.0.0.1:5080`)      |
+| Path                                            | Goes to                             |
+|-------------------------------------------------|-------------------------------------|
+| `/social/complete`                              | auth-web (`127.0.0.1:5080`)         |
+| `/oauth/*`, other `/.well-known/*`, `/social/*` | auth-service (`127.0.0.1:8081`)     |
+| `/calendar/*`                                   | calendar-service (`127.0.0.1:8083`) |
+| `/tasks/*`                                      | tasks-service (`127.0.0.1:8084`)    |
+| `/dav`, `/dav/*`                                | caldav-bridge (`127.0.0.1:8085`)    |
+| `/.well-known/caldav`                           | redirect (301) to `/dav/`           |
+| `/api/*`                                        | nothing: answered with 404          |
+| everything else                                 | auth-web (`127.0.0.1:5080`)         |
 
 As written it uses `localhost`, which works for a local try-out with Caddy's own certificate;
 replace it with your hostname for a real deployment. Start it with `caddy run` in the repository
@@ -623,7 +623,7 @@ Every request gets an `X-Request-Id`. `auth-web` creates it, or keeps the one th
 request when it is well-formed (1 to 128 printable ASCII characters, no spaces) — from the proxy or
 from any client, so do not treat the id as proof of where a request came from. It writes the id on
 each of its log lines and sends it with its API calls; the service logs the same id. One id
-therefore finds a user action in both logs. `calendar-service` and `tasks-service` do the same for the requests they
+therefore finds a user action in both logs. `calendar-service`, `tasks-service` and `caldav-bridge` do the same for the requests they
 receive: each keeps a well-formed id or creates one, and writes it on its log lines.
 
 A request that is refused (any 4xx or 5xx with the `{code, message}` shape) is logged as a warning
