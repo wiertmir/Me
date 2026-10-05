@@ -243,7 +243,7 @@ async fn patch_list(
         check_color(col)?;
     }
     let now = s.now().timestamp();
-    let cal = s.db.with(|c| {
+    let list = s.db.with(|c| {
         c.execute(
             "UPDATE lists SET name = COALESCE(?3, name), color = COALESCE(?4, color), updated_at = ?5
              WHERE id = ?1 AND user_id = ?2",
@@ -251,7 +251,7 @@ async fn patch_list(
         )?;
         owned(c, user, id)
     })?;
-    let list = cal.ok_or_else(not_found)?;
+    let list = list.ok_or_else(not_found)?;
     tracing::info!(event = "list_updated", user_id = %user, list_id = %id);
     Ok(Json(list))
 }

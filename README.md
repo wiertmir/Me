@@ -27,7 +27,9 @@ Design documents live in [`docs/superpowers/specs`](docs/superpowers/specs).
 - `tasks-service/` — the tasks API: task lists per user, tasks with a due date or time, priority,
   reminders and completion, subtasks one level deep, recurring tasks, and a changes feed. It stores
   everything in SQLite under its data directory and accepts the access tokens of `auth-service`.
-- `common/` — Rust code shared with later services (API errors, token verification).
+- `common/` — Rust code shared with later services (API errors, the config loader, logging, token
+  verification, caller identification, and the date/time and recurrence-rule helpers that the calendar and
+  tasks services share).
 - `auth-web.Tests/` — component tests for `auth-web`.
 - `scripts/` — end-to-end checks.
 - `Caddyfile` — reverse-proxy configuration that puts the processes on one origin.
@@ -191,6 +193,11 @@ user makes to the service, before it does its own work, so a client that asks fo
 them. A due time has passed at that instant; a due date has passed at 00:00 UTC of the following
 day. If more than 30 occurrences were missed, only the 30 most recent are created. Nothing is
 created while the list holds 10,000 tasks; creation resumes at the first request that finds room.
+
+The rule lives on the newest task of a chain. A write that would give a repeating rule to a task
+whose series already continues in a later task is refused with 409 `conflict`, so a client that
+writes back an old copy of a task cannot make the series run twice. Clients should send `If-Match`
+when changing a task; a stale copy is then refused with 412.
 
 For the home-network setup do this once before the first start of `tasks-service`:
 

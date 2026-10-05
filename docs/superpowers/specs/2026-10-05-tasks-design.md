@@ -190,7 +190,8 @@ series, cancelled occurrences or overrides.
   - the old head's `rrule` becomes null. It keeps its `recurrence_id` and is
     from then on a plain task;
   - the old head's subtasks that are not deleted are copied to the new task,
-    open, with new ids and uids.
+    open, with new ids and uids. A copied subtask keeps its own `due`, `tz`,
+    `priority` and `reminders` unchanged.
 
   This repeats until the head's `due` has not passed, so each chain has exactly
   one task due in the future, and missed ones stay behind as overdue tasks.
@@ -201,7 +202,10 @@ series, cancelled occurrences or overrides.
 - **Changing a chain.** The head is edited like any task. Its texts, `due` and
   rule shape every later task. Setting its `rrule` to null, or deleting it,
   stops the chain. Giving a rule to a task that has a `recurrence_id` but is
-  not the head starts a new chain from that task.
+  not the head is 409 `conflict` while the chain has a head; when it has none
+  any more, it starts a new chain from that task. This stops a client that
+  writes back an old copy of a head, after the server has moved the rule on,
+  from running the chain twice.
 - **Long absence.** When more than 30 occurrences have been missed in one
   chain, only the 30 most recent are created, and the head after them.
 - **Full list.** When the list holds 10,000 tasks, nothing is created; the
@@ -233,9 +237,9 @@ Outside that prefix: `GET /health`, `GET /api/openapi.json`, `GET /api/docs`.
 
 **Task** (what create, read, replace and the changes feed carry): the fields of
 the data model except `due_utc`, with `completed` (boolean) beside
-`completed_at`, plus `etag`. `PUT` takes the whole task; `list_id`, `uid`,
-`parent_id` and `recurrence_id` cannot change after creation, and
-`completed_at` and `recurrence_id` are set by the server only.
+`completed_at`, plus `etag`. `PUT` takes the whole task; `list_id`, `uid` and
+`parent_id` cannot change after creation; `completed_at` and `recurrence_id`
+are set by the server only.
 
 **Changes feed.** As calendar-service. Without `since`: every task of the list
 that is not deleted and the list's current `sync_token`; this is also how a
@@ -255,7 +259,7 @@ The shared `{code, message}` shape from `common`.
 |---|---|---|
 | 401 | `unauthorized` | No valid token or service secret |
 | 404 | `not_found` | Unknown id, or someone else's |
-| 409 | `conflict` | `uid` already used in the list; list limit reached; the list already holds 10,000 tasks |
+| 409 | `conflict` | `uid` already used in the list; list limit reached; the list already holds 10,000 tasks; a rule given to a task whose chain already continues in a later task |
 | 410 | `sync_token_invalid` | `since` is ahead of the list |
 | 412 | `etag_mismatch` | Stale `If-Match` |
 | 422 | `validation` | Malformed body, bad zone, rule, colour, priority or parent, length caps, a year outside 1900 to 2200, a rule without `due` or on a subtask, reminders without `due` |
@@ -321,7 +325,8 @@ a clock the test sets.
   time; a date rule; `UNTIL` and `COUNT` end the chain; removing the rule or
   deleting the head stops it; subtasks are copied open; a completed head still
   produces the next; created tasks appear in the changes feed; a full list
-  creates nothing; refused frequencies; a rule without `due`.
+  creates nothing; refused frequencies; a rule without `due`; a stale write to
+  an advanced head is refused.
 - Changes feed: full listing, incremental listing, tombstones, a token from the
   future.
 - `If-Match`: accepted, stale, absent.

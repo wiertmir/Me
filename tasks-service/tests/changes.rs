@@ -144,3 +144,21 @@ async fn other_users_list_is_404() {
     assert_eq!(s, 404);
     assert_eq!(got["code"], "not_found");
 }
+
+#[tokio::test]
+async fn since_zero_includes_tombstones() {
+    let app = TestApp::spawn().await;
+    let list = list(&app).await;
+    let a = post(&app, &list).await;
+    let b = post(&app, &list).await;
+    delete(&app, &b).await;
+    let (s, got) = changes(&app, &list, "?since=0").await;
+    assert_eq!(s, 200);
+    assert_eq!(got["tasks"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        got["tasks"][1],
+        json!({"id": b["id"], "uid": b["uid"], "deleted": true})
+    );
+    let (_, got) = changes(&app, &list, "").await;
+    assert_eq!(ids(&got), [a["id"].as_str().unwrap()]);
+}

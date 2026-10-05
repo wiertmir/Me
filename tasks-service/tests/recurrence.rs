@@ -597,3 +597,114 @@ async fn no_room_for_subtasks_creates_nothing() {
     assert_eq!(s, 200);
     assert_eq!(live(&app), 9_998);
 }
+
+/// PUT with an optional `If-Match`; returns status and body.
+async fn put_with(app: &TestApp, task: &Value, etag: Option<&str>, body: Value) -> (u16, Value) {
+    let mut r = app
+        .req(Method::PUT, &path(task))
+        .bearer_auth(app.token(ALICE));
+    if let Some(e) = etag {
+        r = r.header("If-Match", e);
+    }
+    let resp = r.json(&body).send().await.unwrap();
+    let s = resp.status().as_u16();
+    (s, resp.json().await.unwrap_or(Value::Null))
+}
+
+/// A weekly head due 2026-10-07 and the clock a day past it; returns the head as the client saw it.
+async fn advanced_head(app: &TestApp, l: &str) -> Value {
+    let head = post(app, l, json!({"due": "2026-10-07", "rrule": "FREQ=WEEKLY"})).await;
+    app.set_now("2026-10-08T00:00:00Z");
+    head
+}
+
+#[tokio::test]
+async fn stale_put_on_an_advanced_head_is_conflict() {
+    let app = TestApp::spawn().await;
+    let l = list(&app).await;
+    let head = advanced_head(&app, &l).await;
+    let body = json!({"due": "2026-10-07", "rrule": "FREQ=WEEKLY", "completed": true});
+    let (s, b) = put_with(&app, &head, None, body).await;
+    assert_eq!(s, 409, "{b}");
+    assert_eq!(b["code"], "conflict");
+    let got = tasks(&app, &l).await;
+    assert_eq!(dues(&got), ["2026-10-07", "2026-10-14"]);
+    assert_eq!(due(&got, "2026-10-07")["rrule"], Value::Null);
+    assert_eq!(due(&got, "2026-10-14")["rrule"], "FREQ=WEEKLY");
+    app.set_now("2026-10-15T00:00:00Z");
+    let (s, _, _) = app.call(Method::GET, LISTS, ALICE, None).await;
+    assert_eq!(s, 200);
+    assert_eq!(
+        dues(&tasks(&app, &l).await),
+        ["2026-10-07", "2026-10-14", "2026-10-21"]
+    );
+}
+
+#[tokio::test]
+async fn stale_put_without_the_rule_leaves_the_chain_alone() {
+    let app = TestApp::spawn().await;
+    let l = list(&app).await;
+    let head = advanced_head(&app, &l).await;
+    let body = json!({"due": "2026-10-07", "rrule": null, "completed": true});
+    let (s, b) = put_with(&app, &head, None, body).await;
+    assert_eq!(s, 200, "{b}");
+    let got = tasks(&app, &l).await;
+    assert_eq!(dues(&got), ["2026-10-07", "2026-10-14"]);
+    assert_eq!(due(&got, "2026-10-14")["rrule"], "FREQ=WEEKLY");
+}
+
+#[tokio::test]
+async fn stale_put_with_if_match_is_412() {
+    let app = TestApp::spawn().await;
+    let l = list(&app).await;
+    let head = advanced_head(&app, &l).await;
+    let body = json!({"due": "2026-10-07", "rrule": "FREQ=WEEKLY", "completed": true});
+    let (s, b) = put_with(&app, &head, head["etag"].as_str(), body).await;
+    assert_eq!(s, 412, "{b}");
+    assert_eq!(b["code"], "etag_mismatch");
+}
+
+#[tokio::test]
+async fn rule_on_an_old_task_of_a_stopped_chain_starts_a_new_one() {
+    let app = TestApp::spawn().await;
+    let l = list(&app).await;
+    let head = advanced_head(&app, &l).await;
+    let got = tasks(&app, &l).await;
+    let new = due(&got, "2026-10-14").clone();
+    let (s, b) = put_with(
+        &app,
+        &new,
+        None,
+        json!({"due": "2026-10-14", "rrule": null}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let (s, b) = put_with(
+        &app,
+        &head,
+        None,
+        json!({"due": "2026-10-07", "rrule": "FREQ=WEEKLY"}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["recurrence_id"], head["id"]);
+}
+
+#[tokio::test]
+async fn count_with_the_cap_counts_skipped_occurrences() {
+    let app = TestApp::spawn().await;
+    let l = list(&app).await;
+    post(
+        &app,
+        &l,
+        json!({"due": "2026-01-01", "rrule": "FREQ=DAILY;COUNT=100"}),
+    )
+    .await;
+    let got = tasks(&app, &l).await;
+    assert_eq!(got.len(), 31);
+    let newest = due(&got, "2026-04-10");
+    assert_eq!(newest["rrule"], "FREQ=DAILY;COUNT=1");
+    let (s, _, _) = app.call(Method::GET, LISTS, ALICE, None).await;
+    assert_eq!(s, 200);
+    assert_eq!(tasks(&app, &l).await.len(), 31);
+}

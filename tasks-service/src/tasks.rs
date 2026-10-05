@@ -443,6 +443,9 @@ async fn get_task(
 /// The body is the whole task. `uid` and `parent_id` may be left out; when given they must equal the
 /// stored values. `completed` changing stamps or clears `completed_at`. With `If-Match`, the write happens
 /// only if it equals the current etag.
+///
+/// The rule of a repeating task lives on the newest task of its series, and a write based on a copy older
+/// than that is refused (409); send `If-Match` to catch it earlier as 412.
 #[utoipa::path(
     put, path = "/tasks/v1/tasks/{id}",
     tag = "tasks",
@@ -459,6 +462,7 @@ async fn get_task(
     (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
     (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
     (status = 404, description = "`not_found`: unknown id, not a UUID, deleted, or not the caller's", body = ErrorBody),
+    (status = 409, description = "`conflict`: the body gives a rule to a task whose series already continues in a later task", body = ErrorBody),
     (status = 412, description = "`etag_mismatch`: `If-Match` is not the current etag", body = ErrorBody),
     (status = 422, description = "`validation`: as for create, or an immutable field differs", body = ErrorBody),
 )
@@ -489,7 +493,26 @@ async fn replace_task(
             (_, false) => None,
         };
         let recurrence_id = match (&old.rrule, &inp.rrule) {
-            (None, Some(_)) => Some(id),
+            (None, Some(_)) => {
+                // An older task of a chain that still has a head must not get the rule too.
+                if let Some(chain) = old.recurrence_id {
+                    let continues: bool = c.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM tasks WHERE recurrence_id = ?1 AND id != ?2
+                            AND deleted = 0 AND rrule IS NOT NULL)",
+                        params![chain.to_string(), id.to_string()],
+                        |r| r.get(0),
+                    )?;
+                    if continues {
+                        return Err(ApiError::new(
+                            StatusCode::CONFLICT,
+                            "conflict",
+                            "this task's series already continues in a later task",
+                        )
+                        .into());
+                    }
+                }
+                Some(id)
+            }
             _ => old.recurrence_id,
         };
         let revision = bump(c, old.list_id)?;
