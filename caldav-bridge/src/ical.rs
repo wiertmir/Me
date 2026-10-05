@@ -49,7 +49,14 @@ fn text(c: &Component, name: &str) -> String {
     prop(c, name).map_or_else(String::new, |p| p.val.as_str().to_owned())
 }
 
-/// What the one `VCALENDAR` of a body holds, its `VTIMEZONE`s left out. `unfolded` is the body after `unfold`.
+/// A body ready for `components`: line ends made CRLF, then unfolded. The parser looks for CRLF first, so
+/// with bare LFs it reads each value to the next CRLF or, with none, scans the rest of the body per line.
+fn unfolded(body: &str) -> String {
+    unfold(&body.replace("\r\n", "\n").replace('\n', "\r\n"))
+}
+
+/// What the one `VCALENDAR` of a body holds, its `VTIMEZONE`s left out. `unfolded` is the body after
+/// `unfolded()`.
 fn components(unfolded: &str) -> Result<Vec<Component<'_>>, DavError> {
     // The parser recurses once per nested component, and a stack that runs out ends the process. Nothing
     // real nests deeper than an alarm in a to-do or a rule in a zone.
@@ -153,7 +160,7 @@ fn line(name: &str, param: Option<(&str, &str)>, value: &str) -> String {
     if let Some((key, val)) = param {
         p.add_parameter(key, val);
     }
-    p.try_into().unwrap_or_default()
+    p.try_into().expect("writing to a String cannot fail")
 }
 
 fn utc(name: &str, t: DateTime<Utc>) -> String {
@@ -223,8 +230,8 @@ pub fn todo_to_ical(t: &Task, parent_uid: Option<&str>) -> String {
 }
 
 pub fn ical_to_todo(body: &str) -> Result<TodoIn, DavError> {
-    let unfolded = unfold(body);
-    let parts = components(&unfolded)?;
+    let text_of_body = unfolded(body);
+    let parts = components(&text_of_body)?;
     let todo = match &parts[..] {
         [one] if is(one, "VTODO") => one,
         _ => return Err(unsupported("a task list takes one VTODO per item")),
@@ -245,6 +252,7 @@ pub fn ical_to_todo(body: &str) -> Result<TodoIn, DavError> {
     let related_to = todo.properties.iter().find(|p| {
         p.name.as_str().eq_ignore_ascii_case("RELATED-TO")
             && param(p, "RELTYPE").is_none_or(|r| r.eq_ignore_ascii_case("PARENT"))
+            && !p.val.as_str().trim().is_empty()
     });
     let write = TaskWrite {
         uid: Some(uid.clone()),
@@ -259,7 +267,10 @@ pub fn ical_to_todo(body: &str) -> Result<TodoIn, DavError> {
             Vec::new()
         },
         parent_id: None,
-        rrule: prop(todo, "RRULE").map(|p| p.val.as_str().to_owned()),
+        // Nor a rule: without a due the to-do is stored as a plain one.
+        rrule: prop(todo, "RRULE")
+            .filter(|_| due.is_some())
+            .map(|p| p.val.as_str().to_owned()),
         due,
         tz,
     };
@@ -291,6 +302,21 @@ mod tests {
             ("", None),
         ] {
             assert_eq!(minutes_before(text), minutes, "{text}");
+        }
+    }
+
+    #[test]
+    fn any_line_ends_parse() {
+        let lf =
+            "BEGIN:VCALENDAR\nBEGIN:VTODO\nUID:t1\nSUMMARY:one\n two\nEND:VTODO\nEND:VCALENDAR\n";
+        let mixed = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\nUID:t1\nSUMMARY:one\r\n two\nDESCRIPTION:d\r\n\
+                     END:VTODO\nEND:VCALENDAR\r\n";
+        for body in [lf, mixed] {
+            let Ok(todo) = ical_to_todo(body) else {
+                panic!("{body:?} is refused");
+            };
+            assert_eq!(todo.uid, "t1");
+            assert_eq!(todo.write.summary, "onetwo");
         }
     }
 

@@ -36,7 +36,15 @@ async fn put(
     let (status, h, _) = s
         .dav("PUT", &path, "alice", headers, &vtodo(uid, lines))
         .await;
+    // What is stored is not the body as sent, so the answer names no etag for it.
+    assert!(!h.contains_key("etag"));
     (status, h)
+}
+
+async fn etag(s: &Stack, list: &str, uid: &str) -> String {
+    let (st, h, _) = get(s, list, uid).await;
+    assert_eq!(st, StatusCode::OK);
+    h["etag"].to_str().unwrap().to_owned()
 }
 
 async fn get(s: &Stack, list: &str, uid: &str) -> (StatusCode, HeaderMap, String) {
@@ -125,9 +133,9 @@ async fn create_read_change_delete() {
     let s = Stack::spawn().await;
     let l = list(&s).await;
     let body = "SUMMARY:Buy milk\r\nDUE;VALUE=DATE:20261007\r\nPRIORITY:5";
-    let (st, h) = put(&s, &l, "t1", body, &[]).await;
+    let (st, _) = put(&s, &l, "t1", body, &[]).await;
     assert_eq!(st, StatusCode::CREATED);
-    let etag = h["etag"].to_str().unwrap().to_owned();
+    let etag = etag(&s, &l, "t1").await;
 
     let (st, h, text) = get(&s, &l, "t1").await;
     assert_eq!(st, StatusCode::OK);
@@ -148,9 +156,9 @@ async fn create_read_change_delete() {
     assert_eq!(task["priority"], 5);
 
     let body = "SUMMARY:Buy oat milk\r\nDUE;VALUE=DATE:20261007\r\nPRIORITY:5";
-    let (st, h) = put(&s, &l, "t1", body, &[("if-match", &etag)]).await;
+    let (st, _) = put(&s, &l, "t1", body, &[("if-match", &etag)]).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
-    let etag2 = h["etag"].to_str().unwrap().to_owned();
+    let etag2 = self::etag(&s, &l, "t1").await;
     assert_ne!(etag2, etag);
     assert_eq!(
         read(&s, &l, "t1").await.val("SUMMARY"),
@@ -263,6 +271,9 @@ async fn subtask_from_related_to() {
     assert_eq!(stored(&s, &l, "c1").await["parent_id"], parent_id);
     assert_eq!(read(&s, &l, "c1").await.val("RELATED-TO"), Some("p1"));
 
+    let empty = "SUMMARY:empty\r\nRELATED-TO:";
+    assert_eq!(put(&s, &l, "e1", empty, &[]).await.0, StatusCode::CREATED);
+    assert_eq!(stored(&s, &l, "e1").await["parent_id"], Value::Null);
     let orphan = "SUMMARY:orphan\r\nRELATED-TO:nope";
     assert_eq!(put(&s, &l, "o1", orphan, &[]).await.0, StatusCode::CREATED);
     assert_eq!(stored(&s, &l, "o1").await["parent_id"], Value::Null);
@@ -302,14 +313,33 @@ async fn rule_is_stored_and_never_sent() {
 }
 
 #[tokio::test]
+async fn rule_without_a_due_is_dropped() {
+    let s = Stack::spawn().await;
+    let l = list(&s).await;
+    let body = "SUMMARY:water\r\nRRULE:FREQ=DAILY";
+    assert_eq!(put(&s, &l, "t1", body, &[]).await.0, StatusCode::CREATED);
+    assert_eq!(stored(&s, &l, "t1").await["rrule"], Value::Null);
+
+    // A stored series ends when the client takes its due away.
+    let body = "SUMMARY:water\r\nDUE;VALUE=DATE:20261007\r\nRRULE:FREQ=WEEKLY";
+    assert_eq!(put(&s, &l, "t2", body, &[]).await.0, StatusCode::CREATED);
+    assert_eq!(stored(&s, &l, "t2").await["rrule"], "FREQ=WEEKLY");
+    let (st, _) = put(&s, &l, "t2", "SUMMARY:water", &[]).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let task = stored(&s, &l, "t2").await;
+    assert_eq!(task["due"], Value::Null);
+    assert_eq!(task["rrule"], Value::Null);
+}
+
+#[tokio::test]
 async fn listing_and_reports() {
     let s = Stack::spawn().await;
     let l = list(&s).await;
     let mut etags = Vec::new();
     for uid in ["t1", "t2", "t3"] {
-        let (st, h) = put(&s, &l, uid, "SUMMARY:x", &[]).await;
+        let (st, _) = put(&s, &l, uid, "SUMMARY:x", &[]).await;
         assert_eq!(st, StatusCode::CREATED);
-        etags.push(h["etag"].to_str().unwrap().to_owned());
+        etags.push(etag(&s, &l, uid).await);
     }
     let href = |uid: &str| format!("{l}/{uid}.ics");
 
@@ -341,7 +371,7 @@ async fn listing_and_reports() {
     let multiget = format!(
         r#"<C:calendar-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
         <D:prop><D:getetag/><C:calendar-data/></D:prop>
-        <D:href>{}</D:href><D:href>{}</D:href><D:href>{}</D:href></C:calendar-multiget>"#,
+        <D:href>{}</D:href><D:href>https://me.example:8443{}</D:href><D:href>{}</D:href></C:calendar-multiget>"#,
         href("t1"),
         href("t3"),
         href("gone")
@@ -404,7 +434,8 @@ async fn subtask_in_a_report_names_its_parent() {
 async fn item_propfind() {
     let s = Stack::spawn().await;
     let l = list(&s).await;
-    let (_, h) = put(&s, &l, "t1", "SUMMARY:x", &[]).await;
+    put(&s, &l, "t1", "SUMMARY:x", &[]).await;
+    let stored_etag = etag(&s, &l, "t1").await;
     let path = format!("{l}/t1.ics");
     let (st, _, xml) = s
         .dav("PROPFIND", &path, "alice", &[("depth", "0")], ITEM_PROPS)
@@ -414,7 +445,7 @@ async fn item_propfind() {
     let r = responses(&doc);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].0, path);
-    assert_eq!(text(r[0].1, DAV, "getetag"), h["etag"].to_str().unwrap());
+    assert_eq!(text(r[0].1, DAV, "getetag"), stored_etag);
     assert!(text(r[0].1, DAV, "getcontenttype").starts_with("text/calendar"));
     let kind = named(r[0].1, DAV, "resourcetype").unwrap();
     assert!(!kind.has_children());
@@ -424,6 +455,14 @@ async fn item_propfind() {
         .find(|n| n.tag_name().name() == "propstat" && text(*n, DAV, "status").contains("404"))
         .unwrap();
     assert!(named(missing, "http://calendarserver.org/ns/", "getctag").is_some());
+    // Nor a name, also when everything is asked for.
+    let (_, _, xml) = s.dav("PROPFIND", &path, "alice", &[], "").await;
+    let doc = Document::parse(&xml).unwrap();
+    assert!(named(doc.root_element(), DAV, "getetag").is_some());
+    assert!(named(doc.root_element(), DAV, "displayname").is_none());
+    let name = r#"<D:propfind xmlns:D="DAV:"><D:prop><D:displayname/></D:prop></D:propfind>"#;
+    let (_, _, xml) = s.dav("PROPFIND", &path, "alice", &[], name).await;
+    assert!(xml.contains("404 Not Found"), "{xml}");
 
     let gone = format!("{l}/nope.ics");
     let (st, _, _) = s.dav("PROPFIND", &gone, "alice", &[], ITEM_PROPS).await;
@@ -434,9 +473,9 @@ async fn item_propfind() {
 async fn preconditions() {
     let s = Stack::spawn().await;
     let l = list(&s).await;
-    let (st, h) = put(&s, &l, "t1", "SUMMARY:x", &[("if-none-match", "*")]).await;
+    let (st, _) = put(&s, &l, "t1", "SUMMARY:x", &[("if-none-match", "*")]).await;
     assert_eq!(st, StatusCode::CREATED);
-    let etag = h["etag"].to_str().unwrap().to_owned();
+    let etag = etag(&s, &l, "t1").await;
 
     let (st, _) = put(&s, &l, "t1", "SUMMARY:y", &[("if-none-match", "*")]).await;
     assert_eq!(st, StatusCode::PRECONDITION_FAILED);

@@ -144,17 +144,18 @@ async fn put_todo(
         return Err(DavError::new(StatusCode::PRECONDITION_FAILED, ""));
     }
     let mut write = todo.write;
-    let (status, task) = match &stored {
+    let status = match &stored {
         Some(old) => {
-            write.rrule = old.rrule.clone();
-            let task = b.replace_task(old.id, &write, guard).await?;
-            (StatusCode::NO_CONTENT, task)
+            // Without a due there is nothing to repeat from: the series ends here.
+            write.rrule = old.rrule.clone().filter(|_| write.due.is_some());
+            b.replace_task(old.id, &write, guard).await?;
+            StatusCode::NO_CONTENT
         }
         None => {
             if let Some(parent) = &todo.related_to {
                 write.parent_id = b.task_by_uid(list, parent).await?.map(|p| p.id);
             }
-            let task = match b.create_task(list, &write).await {
+            match b.create_task(list, &write).await {
                 // The service refuses a parent that is a subtask itself, and a rule on a subtask.
                 Err(e) if write.parent_id.is_some() && e.status() == StatusCode::FORBIDDEN => {
                     write.parent_id = None;
@@ -162,10 +163,11 @@ async fn put_todo(
                 }
                 other => other?,
             };
-            (StatusCode::CREATED, task)
+            StatusCode::CREATED
         }
     };
-    Ok((status, [(header::ETAG, task.etag)]).into_response())
+    // No `ETag`: what is stored is not the body as sent, so the client reads the item back.
+    Ok(status.into_response())
 }
 
 /// One `response` of a multistatus: a root, the principal, the home, a collection or an item.
@@ -324,7 +326,14 @@ async fn report(
             let responses: Vec<_> = hrefs
                 .into_iter()
                 .map(|href| {
-                    let task = match path::parse(&href, username) {
+                    // An href may be a whole URL.
+                    let path = match href.split_once("://") {
+                        Some((_, rest)) if !href.starts_with('/') => {
+                            rest.find('/').map_or("", |i| &rest[i..])
+                        }
+                        _ => &href,
+                    };
+                    let task = match path::parse(path, username) {
                         Some(Target::Item(Kind::Todos, l, uid)) if l == list => {
                             by_uid.get(uid.as_str())
                         }
@@ -361,7 +370,7 @@ fn value(e: &Entry, username: &str, prop: &Prop) -> Option<String> {
         (Prop::ResourceType, Target::Item(..), _, _) => String::new(),
         (Prop::ResourceType, _, _, _) => "<D:collection/>".into(),
         (Prop::DisplayName, _, Some(c), _) => xml::escape(&c.name),
-        (Prop::DisplayName, _, None, _) => xml::escape(username),
+        (Prop::DisplayName, _, None, None) => xml::escape(username),
         (Prop::CurrentUserPrincipal, _, _, _) => principal,
         (Prop::CalendarHomeSet, Target::Principal, _, _) => href(Target::Home),
         (Prop::SupportedComponents, _, Some(c), _) => match c.kind {
