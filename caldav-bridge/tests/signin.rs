@@ -56,10 +56,8 @@ async fn rate_limited_is_429_with_retry_after() {
 #[tokio::test]
 async fn signed_in_request_passes() {
     let s = Stack::spawn().await;
-    let (status, _, _) = s
-        .dav("PROPFIND", "/dav/calendars/x/y.ics", "alice", &[], "")
-        .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = s.dav("OPTIONS", "/dav/", "alice", &[], "").await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -83,10 +81,10 @@ async fn auth_service_down_is_503() {
 async fn password_may_contain_colons() {
     let s = Stack::spawn().await;
     let r = s
-        .req("GET", "/dav/")
+        .req("OPTIONS", "/dav/")
         .basic_auth("alice", Some("pw:x:y"))
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert_eq!(r.status(), StatusCode::OK);
 }

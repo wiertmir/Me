@@ -1,8 +1,9 @@
 use axum::http::{Method, StatusCode};
 use reqwest::{RequestBuilder, Response};
+use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{AppState, DavError};
+use crate::{AppState, DavError, path::Kind};
 
 #[derive(Clone, Copy)]
 pub enum Service {
@@ -64,5 +65,47 @@ impl Backend<'_> {
                 DavError::new(StatusCode::BAD_GATEWAY, "backend failed")
             }
         })
+    }
+}
+
+/// A calendar or a task list.
+pub struct Collection {
+    pub kind: Kind,
+    pub id: Uuid,
+    pub name: String,
+    pub color: String,
+    pub sync_token: i64,
+}
+
+#[derive(Deserialize)]
+struct Listed {
+    id: Uuid,
+    name: String,
+    color: String,
+    sync_token: i64,
+}
+
+impl Backend<'_> {
+    /// Every calendar, then every task list, of the user.
+    pub async fn collections(&self) -> Result<Vec<Collection>, DavError> {
+        let mut all = Vec::new();
+        for (service, path, kind) in [
+            (Service::Calendar, "/calendar/v1/calendars", Kind::Events),
+            (Service::Tasks, "/tasks/v1/lists", Kind::Todos),
+        ] {
+            let resp = self.send(self.request(service, Method::GET, path)).await?;
+            let listed: Vec<Listed> = resp.json().await.map_err(|e| {
+                tracing::warn!(error = %e, "backend answered with unexpected data");
+                DavError::new(StatusCode::BAD_GATEWAY, "backend failed")
+            })?;
+            all.extend(listed.into_iter().map(|l| Collection {
+                kind,
+                id: l.id,
+                name: l.name,
+                color: l.color,
+                sync_token: l.sync_token,
+            }));
+        }
+        Ok(all)
     }
 }

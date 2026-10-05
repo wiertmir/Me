@@ -1,10 +1,12 @@
 pub mod auth;
 pub mod backend;
 pub mod config;
+mod dav;
+mod path;
+mod xml;
 
 use std::{sync::Arc, time::Duration};
 
-use auth::Signed;
 use axum::{
     Json, Router,
     extract::DefaultBodyLimit,
@@ -110,18 +112,13 @@ async fn not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such route")
 }
 
-/// Every signed-in request answers 204 until the CalDAV methods are added.
-async fn dav(_: Signed) -> StatusCode {
-    StatusCode::NO_CONTENT
-}
-
 /// `/dav/{*rest}` is one route, so the request log shows that template and never the item name in `rest`.
 fn routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
-        .route("/dav", any(dav))
-        .route("/dav/", any(dav))
-        .route("/dav/{*rest}", any(dav))
+        .route("/dav", any(dav::handle))
+        .route("/dav/", any(dav::handle))
+        .route("/dav/{*rest}", any(dav::handle))
         .layer(DefaultBodyLimit::max(1024 * 1024))
 }
 
