@@ -34,6 +34,10 @@ pub fn catch_up(c: &Connection, user: Uuid, now: DateTime<Utc>) -> rusqlite::Res
 /// Creates the tasks that follow `head`, whose due has passed: the missed ones and the upcoming one, which
 /// becomes the head.
 fn advance(c: &Connection, user: Uuid, head: &Task, now: DateTime<Utc>) -> rusqlite::Result<()> {
+    // A full list takes nothing, so its heads are not walked: such a head can be far behind and never moves.
+    if live_count(c, head.list_id)? >= MAX_TASKS_PER_LIST {
+        return Ok(());
+    }
     let rule = head.rrule.as_deref().unwrap_or_default();
     let read = due_parts(head.due.as_deref().unwrap_or_default(), head.tz.as_deref())
         .and_then(|(start, tz, _)| Ok((start, tz, recur::build(rule, start, tz)?)));
@@ -59,8 +63,11 @@ fn advance(c: &Connection, user: Uuid, head: &Task, now: DateTime<Utc>) -> rusql
             When::Timed(_) => When::Timed(dt.naive_utc()),
         })
         .zip(1u32..);
-    // ponytail: walks every occurrence from the head's due to now, on every request, for a head that is not
-    // advanced (its rule ended by UNTIL, or its list full); clear the rule of an ended chain to stop that
+    // ponytail: a head that passes the room check above and still does not advance is walked again on every
+    // request, under the database lock: a rule that produces nothing more (up to the 100,000 steps of
+    // `limit`), and a head whose subtasks do not fit in the room left (from its due to now). If that gets
+    // slow, mark such a head in the database (a column: the schema has none for it) and skip it until it
+    // or its list changes
     let mut keep = VecDeque::new();
     for (w, nth) in later {
         let over = passed(w, tz);

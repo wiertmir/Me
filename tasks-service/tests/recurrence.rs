@@ -236,7 +236,12 @@ async fn until_ends_the_chain() {
     .await;
     app.set_now("2026-11-01T00:00:00Z");
     let want = ["2026-10-06", "2026-10-07", "2026-10-08"];
-    assert_eq!(dues(&tasks(&app, &l).await), want);
+    let got = tasks(&app, &l).await;
+    assert_eq!(dues(&got), want);
+    assert_eq!(
+        due(&got, "2026-10-08")["rrule"],
+        "FREQ=DAILY;UNTIL=20261008"
+    );
     assert_eq!(dues(&tasks(&app, &l).await), want);
 }
 
@@ -479,7 +484,8 @@ async fn full_list_creates_nothing_then_resumes() {
     assert_eq!(next, 1);
 }
 
-#[tokio::test]
+// Several worker threads, so the requests really run at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_requests_create_one_next_task() {
     let app = TestApp::spawn().await;
     let l = list(&app).await;
