@@ -66,6 +66,13 @@ async fn client_address_is_passed_on() {
     let h = [("x-forwarded-for", "203.0.113.9, 10.0.0.1")];
     s.dav("GET", "/dav/", "alice", &h, "").await;
     assert_eq!(s.last_forwarded_for().as_deref(), Some("10.0.0.1"));
+    // An empty last entry is nothing to pass on.
+    for empty in ["1.2.3.4,", "1.2.3.4, ", ""] {
+        s.dav("GET", "/dav/", "alice", &h, "").await;
+        s.dav("GET", "/dav/", "alice", &[("x-forwarded-for", empty)], "")
+            .await;
+        assert_eq!(s.last_forwarded_for(), None, "{empty:?}");
+    }
     s.dav("GET", "/dav/", "alice", &[], "").await;
     assert_eq!(s.last_forwarded_for(), None);
 }

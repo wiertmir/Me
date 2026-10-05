@@ -62,8 +62,10 @@ impl FromRequestParts<AppState> for Signed {
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.rsplit(',').next())
+            .map(str::trim)
+            .filter(|ip| !ip.is_empty())
         {
-            req = req.header("x-forwarded-for", ip.trim());
+            req = req.header("x-forwarded-for", ip);
         }
         let resp = req.send().await.map_err(|e| {
             tracing::warn!(error = %e, "auth-service unreachable");

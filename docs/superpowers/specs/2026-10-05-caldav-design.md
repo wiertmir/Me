@@ -145,7 +145,8 @@ that way; it lets the bridge find an item without storing anything.
 
 Anything else is 405. `PROPFIND` with depth `infinity` is 403. Request bodies
 are limited to 1 MB. A request's XML is refused (400) when it is nested more
-than 32 elements deep or holds a tag longer than 8 KB. Text placed into XML answers has the characters XML 1.0
+than 32 elements deep, holds a tag longer than 8 KB or carries more than 64
+attributes in all. Text placed into XML answers has the characters XML 1.0
 forbids removed.
 
 Properties answered (others are reported as not found):

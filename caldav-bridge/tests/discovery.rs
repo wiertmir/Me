@@ -198,13 +198,34 @@ async fn deeply_nested_xml_is_refused() {
 #[tokio::test]
 async fn huge_tag_is_refused() {
     let s = Stack::spawn().await;
-    let attributes: String = (0..100_000).map(|i| format!(" a{i}=\"\"")).collect();
-    let body = format!("<a{attributes}/>");
+    let body = format!("<a x=\"{}\"/>", "y".repeat(1_000_000));
     let asked = std::time::Instant::now();
     let (status, answer) = propfind(&s, "/dav/", "0", &body).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(answer.contains("tag is too long"), "{answer}");
     assert!(asked.elapsed().as_secs() < 2, "{:?}", asked.elapsed());
+}
+
+/// The XML parser copies every namespace in scope into each element that declares one, comparing as it
+/// goes: many declarations on nested tags, then many elements that declare one more.
+#[tokio::test]
+async fn namespace_flood_is_refused() {
+    let s = Stack::spawn().await;
+    let open = |level: usize| {
+        let declared = |n| format!(" xmlns:n{level}x{n}=\"u\"");
+        format!("<a{}>", (0..50).map(declared).collect::<String>())
+    };
+    let body = format!(
+        "{}{}{}",
+        (0..31).map(open).collect::<String>(),
+        "<a xmlns:b=\"u\"/>".repeat(200),
+        "</a>".repeat(31)
+    );
+    let asked = std::time::Instant::now();
+    let (status, answer) = propfind(&s, "/dav/", "0", &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(answer.contains("too many attributes"), "{answer}");
+    assert!(asked.elapsed().as_millis() < 500, "{:?}", asked.elapsed());
 }
 
 /// A poll of one collection asks only the service that holds it.

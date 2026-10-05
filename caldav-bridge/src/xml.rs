@@ -75,12 +75,14 @@ fn props(root: roxmltree::Node) -> Option<Vec<Prop>> {
     Some(props.collect())
 }
 
-/// Nothing a client sends nests deeper or has a longer tag.
+/// Nothing a client sends nests deeper, has a longer tag or carries more attributes in all.
 const MAX_DEPTH: usize = 32;
 const MAX_TAG: usize = 8 * 1024;
+const MAX_ATTRIBUTES: usize = 64;
 
 /// Refuses a body the parser must not see: it recurses once per nested element, and a stack that runs out
-/// ends the process; and it compares every attribute of a tag with every other one. Tags are told from
+/// ends the process; and it compares every attribute of a tag with every other one, and every namespace
+/// in scope with every other one, for each element that declares one. Tags are told from
 /// comments, CDATA sections, processing instructions and quoted attribute values as the parser tells them;
 /// anything else that starts with `<!`, or does not end, is refused.
 #[allow(clippy::result_large_err)] // the error type is the crate's own, as everywhere else
@@ -91,7 +93,7 @@ fn shape(body: &str) -> Result<(), DavError> {
         Some(i) => Ok(from + i + end.len()),
         None => Err(bad("malformed XML")),
     };
-    let (mut i, mut depth) = (0, 0usize);
+    let (mut i, mut depth, mut attributes) = (0, 0usize, 0usize);
     while let Some(start) = body[i..].find('<').map(|at| i + at) {
         let rest = &body[start..];
         if rest.starts_with("<!--") {
@@ -111,6 +113,11 @@ fn shape(body: &str) -> Result<(), DavError> {
                     (None, _) => return Err(bad("malformed XML")),
                     _ if end - start >= MAX_TAG => return Err(bad("a tag is too long")),
                     (Some(b'>'), None) => break,
+                    // An attribute or a namespace declaration: only those have a `=` outside quotes.
+                    (Some(b'='), None) if attributes == MAX_ATTRIBUTES => {
+                        return Err(bad("too many attributes"));
+                    }
+                    (Some(b'='), None) => attributes += 1,
                     (Some(c @ (b'"' | b'\'')), None) => quote = Some(*c),
                     (Some(c), Some(q)) if *c == q => quote = None,
                     _ => {}
@@ -329,6 +336,31 @@ mod tests {
         assert!(refused(&format!("<a></a{}>", " ".repeat(8192))));
         // Text and comments are not tags.
         assert!(shape(&format!("<a>{0}<!--{0}--></a>", "y".repeat(100_000))).is_ok());
+    }
+
+    #[test]
+    fn attributes_are_limited_in_all() {
+        // Eight to a tag.
+        let tags = |attributes: usize| {
+            let tag = |n: usize| {
+                let named = |i| format!(" x{i}=\"v\"");
+                let last = (n * 8 + 8).min(attributes);
+                format!("<a{}/>", (n * 8..last).map(named).collect::<String>())
+            };
+            let all: String = (0..attributes.div_ceil(8)).map(tag).collect();
+            format!("<r>{all}</r>")
+        };
+        assert_eq!(tags(64).matches('=').count(), 64);
+        assert!(shape(&tags(64)).is_ok());
+        assert!(refused(&tags(65)));
+        // Namespace declarations are attributes; those of the XML declaration are not.
+        let declared: String = (0..65).map(|i| format!(" xmlns:n{i}='u'")).collect();
+        assert!(refused(&format!("<r{declared}/>")));
+        assert!(shape(&format!("<?xml version=\"1.0\"?>{}", tags(64))).is_ok());
+        // Neither is an `=` in a value, in text, in a comment or in a CDATA section.
+        let equals = "=".repeat(100);
+        assert!(shape(&format!("<r x=\"{equals}\" y='{equals}'>{equals}</r>")).is_ok());
+        assert!(shape(&format!("<r><!--{equals}--><![CDATA[{equals}]]></r>")).is_ok());
     }
 
     #[test]
