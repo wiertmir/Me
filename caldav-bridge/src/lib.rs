@@ -2,6 +2,7 @@ pub mod auth;
 pub mod backend;
 pub mod config;
 mod dav;
+mod ical;
 mod path;
 mod xml;
 
@@ -63,6 +64,10 @@ impl DavError {
             message: message.into(),
             headers: HeaderMap::new(),
         }
+    }
+
+    pub fn status(&self) -> StatusCode {
+        self.status
     }
 
     pub fn precondition(mut self, name: &'static str) -> Self {

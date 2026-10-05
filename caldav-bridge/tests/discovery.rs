@@ -1,12 +1,10 @@
 mod support;
 
 use axum::http::{Method, StatusCode};
-use roxmltree::{Document, Node};
+use roxmltree::Document;
 use serde_json::json;
-use support::{ALICE, Stack};
+use support::{ALICE, CALDAV, DAV, Stack, named, responses, text};
 
-const DAV: &str = "DAV:";
-const CALDAV: &str = "urn:ietf:params:xml:ns:caldav";
 const CS: &str = "http://calendarserver.org/ns/";
 const APPLE: &str = "http://apple.com/ns/ical/";
 
@@ -14,24 +12,6 @@ const COLLECTION_PROPS: &str = r#"<D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:p
   <D:prop><D:resourcetype/><D:owner/><D:displayname/><D:current-user-principal/>
   <D:current-user-privilege-set/><C:supported-calendar-component-set/><CS:getctag/><A:calendar-color/></D:prop>
 </D:propfind>"#;
-
-fn named<'a>(n: Node<'a, 'a>, ns: &str, name: &str) -> Option<Node<'a, 'a>> {
-    n.descendants().find(|d| {
-        d.is_element() && d.tag_name().name() == name && d.tag_name().namespace() == Some(ns)
-    })
-}
-
-fn text(n: Node, ns: &str, name: &str) -> String {
-    named(n, ns, name).unwrap().text().unwrap_or("").to_owned()
-}
-
-/// The `response` elements of a multistatus, keyed by their href.
-fn responses<'a>(doc: &'a Document) -> Vec<(String, Node<'a, 'a>)> {
-    doc.descendants()
-        .filter(|n| n.tag_name().name() == "response" && n.tag_name().namespace() == Some(DAV))
-        .map(|r| (text(r, DAV, "href"), r))
-        .collect()
-}
 
 async fn propfind(s: &Stack, path: &str, depth: &str, body: &str) -> (StatusCode, String) {
     let (status, _, text) = s

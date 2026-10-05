@@ -55,6 +55,26 @@ fn bad(message: &str) -> DavError {
     DavError::new(StatusCode::BAD_REQUEST, message)
 }
 
+fn is(n: roxmltree::Node, ns: &str, name: &str) -> bool {
+    n.is_element() && n.tag_name().namespace() == Some(ns) && n.tag_name().name() == name
+}
+
+/// The properties named in the `prop` child of a request's root; `None` without one.
+fn props(root: roxmltree::Node) -> Option<Vec<Prop>> {
+    let prop = root.children().find(|n| is(*n, DAV, "prop"))?;
+    let props = prop.children().filter(|n| n.is_element()).map(|n| {
+        let (ns, name) = (n.tag_name().namespace().unwrap_or(""), n.tag_name().name());
+        match KNOWN
+            .iter()
+            .find(|(_, k_ns, k_name)| *k_ns == ns && *k_name == name)
+        {
+            Some((p, _, _)) => p.clone(),
+            None => Prop::Unknown(ns.into(), name.into()),
+        }
+    });
+    Some(props.collect())
+}
+
 /// An empty body or `allprop` asks for everything. A DOCTYPE is refused, so no entity is ever expanded.
 #[allow(clippy::result_large_err)] // the error type is the crate's own, as everywhere else
 pub fn read_propfind(body: &str) -> Result<PropfindReq, DavError> {
@@ -63,29 +83,40 @@ pub fn read_propfind(body: &str) -> Result<PropfindReq, DavError> {
     }
     let doc = roxmltree::Document::parse(body).map_err(|_| bad("malformed XML"))?;
     let root = doc.root_element();
-    if root.tag_name().namespace() != Some(DAV) || root.tag_name().name() != "propfind" {
+    if !is(root, DAV, "propfind") {
         return Err(bad("expected a propfind"));
     }
-    let Some(prop) = root.children().find(|n| {
-        n.is_element() && n.tag_name().name() == "prop" && n.tag_name().namespace() == Some(DAV)
-    }) else {
-        return Ok(PropfindReq { props: None });
-    };
-    let props = prop
-        .children()
-        .filter(|n| n.is_element())
-        .map(|n| {
-            let (ns, name) = (n.tag_name().namespace().unwrap_or(""), n.tag_name().name());
-            match KNOWN
-                .iter()
-                .find(|(_, k_ns, k_name)| *k_ns == ns && *k_name == name)
-            {
-                Some((p, _, _)) => p.clone(),
-                None => Prop::Unknown(ns.into(), name.into()),
-            }
-        })
-        .collect();
-    Ok(PropfindReq { props: Some(props) })
+    Ok(PropfindReq { props: props(root) })
+}
+
+pub enum ReportReq {
+    /// The hrefs as the client wrote them.
+    Multiget {
+        props: Vec<Prop>,
+        hrefs: Vec<String>,
+    },
+    /// Its filter is not read: the answer is every item.
+    Query { props: Vec<Prop> },
+}
+
+/// Without a `prop`, a report is answered with the etag and the data.
+#[allow(clippy::result_large_err)] // as above
+pub fn read_report(body: &str) -> Result<ReportReq, DavError> {
+    let doc = roxmltree::Document::parse(body).map_err(|_| bad("malformed XML"))?;
+    let root = doc.root_element();
+    let props = props(root).unwrap_or_else(|| vec![Prop::ETag, Prop::CalendarData]);
+    if is(root, CALDAV, "calendar-multiget") {
+        let hrefs = root
+            .children()
+            .filter(|n| is(*n, DAV, "href"))
+            .map(|n| n.text().unwrap_or("").trim().to_owned())
+            .collect();
+        Ok(ReportReq::Multiget { props, hrefs })
+    } else if is(root, CALDAV, "calendar-query") {
+        Ok(ReportReq::Query { props })
+    } else {
+        Err(DavError::new(StatusCode::FORBIDDEN, "report not supported"))
+    }
 }
 
 /// Escapes text for XML 1.0; characters the format forbids are dropped.
@@ -110,6 +141,8 @@ pub struct Response {
     /// Inner XML of each property.
     pub found: Vec<(Prop, String)>,
     pub missing: Vec<Prop>,
+    /// Nothing is at `href`: the answer is that status alone.
+    pub not_found: bool,
 }
 
 /// The element for a property, empty or around `inner`, with the fixed prefixes of `multistatus`.
@@ -140,6 +173,10 @@ pub fn multistatus(responses: &[Response]) -> String {
     );
     for r in responses {
         out += &format!("<D:response><D:href>{}</D:href>", escape(&r.href));
+        if r.not_found {
+            out += "<D:status>HTTP/1.1 404 Not Found</D:status></D:response>";
+            continue;
+        }
         if !r.found.is_empty() {
             out += "<D:propstat><D:prop>";
             for (p, inner) in &r.found {

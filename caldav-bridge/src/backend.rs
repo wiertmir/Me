@@ -1,6 +1,8 @@
-use axum::http::{Method, StatusCode};
+use axum::http::{Method, StatusCode, header};
+use chrono::{DateTime, Utc};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::{RequestBuilder, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
 use crate::{AppState, DavError, path::Kind};
@@ -44,7 +46,8 @@ impl Backend<'_> {
     /// Sends the request; a success is returned as it is, anything else becomes the error the client gets.
     pub async fn send(&self, req: RequestBuilder) -> Result<Response, DavError> {
         let resp = req.send().await.map_err(|e| {
-            tracing::warn!(error = %e, "backend unreachable");
+            // The address can carry an item's uid, which is never logged.
+            tracing::warn!(error = %e.without_url(), "backend unreachable");
             DavError::new(StatusCode::BAD_GATEWAY, "backend unreachable")
         })?;
         let status = resp.status();
@@ -64,6 +67,14 @@ impl Backend<'_> {
                 tracing::warn!(%status, "backend answered unexpectedly");
                 DavError::new(StatusCode::BAD_GATEWAY, "backend failed")
             }
+        })
+    }
+
+    /// Sends the request and reads the JSON of its answer.
+    async fn json<T: DeserializeOwned>(&self, req: RequestBuilder) -> Result<T, DavError> {
+        self.send(req).await?.json().await.map_err(|e| {
+            tracing::warn!(error = %e.without_url(), "backend answered with unexpected data");
+            DavError::new(StatusCode::BAD_GATEWAY, "backend failed")
         })
     }
 }
@@ -93,11 +104,7 @@ impl Backend<'_> {
             (Service::Calendar, "/calendar/v1/calendars", Kind::Events),
             (Service::Tasks, "/tasks/v1/lists", Kind::Todos),
         ] {
-            let resp = self.send(self.request(service, Method::GET, path)).await?;
-            let listed: Vec<Listed> = resp.json().await.map_err(|e| {
-                tracing::warn!(error = %e, "backend answered with unexpected data");
-                DavError::new(StatusCode::BAD_GATEWAY, "backend failed")
-            })?;
+            let listed: Vec<Listed> = self.json(self.request(service, Method::GET, path)).await?;
             all.extend(listed.into_iter().map(|l| Collection {
                 kind,
                 id: l.id,
@@ -107,5 +114,99 @@ impl Backend<'_> {
             }));
         }
         Ok(all)
+    }
+}
+
+/// A task as tasks-service answers it.
+#[derive(Deserialize)]
+pub struct Task {
+    pub id: Uuid,
+    pub uid: String,
+    pub summary: String,
+    pub description: String,
+    pub due: Option<String>,
+    pub tz: Option<String>,
+    pub priority: u8,
+    pub completed: bool,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub reminders: Vec<u32>,
+    pub parent_id: Option<Uuid>,
+    pub rrule: Option<String>,
+    pub etag: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// What tasks-service takes for a task. On a replace, `uid` and `parent_id` left out stay as stored.
+#[derive(Serialize, Default)]
+pub struct TaskWrite {
+    pub uid: Option<String>,
+    pub summary: String,
+    pub description: String,
+    pub due: Option<String>,
+    pub tz: Option<String>,
+    pub priority: u8,
+    pub completed: bool,
+    pub reminders: Vec<u32>,
+    pub parent_id: Option<Uuid>,
+    pub rrule: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Changes {
+    sync_token: i64,
+    tasks: Vec<Task>,
+}
+
+impl Backend<'_> {
+    fn tasks_request(&self, method: Method, path: &str) -> RequestBuilder {
+        self.request(Service::Tasks, method, &format!("/tasks/v1{path}"))
+    }
+
+    /// The list's sync token and every task in it.
+    pub async fn tasks(&self, list: Uuid) -> Result<(i64, Vec<Task>), DavError> {
+        let path = format!("/lists/{list}/changes");
+        let c: Changes = self.json(self.tasks_request(Method::GET, &path)).await?;
+        Ok((c.sync_token, c.tasks))
+    }
+
+    pub async fn task_by_uid(&self, list: Uuid, uid: &str) -> Result<Option<Task>, DavError> {
+        let uid = utf8_percent_encode(uid, NON_ALPHANUMERIC);
+        let path = format!("/lists/{list}/by-uid?uid={uid}");
+        let found: Vec<Task> = self.json(self.tasks_request(Method::GET, &path)).await?;
+        Ok(found.into_iter().next())
+    }
+
+    pub async fn task(&self, id: Uuid) -> Result<Task, DavError> {
+        let path = format!("/tasks/{id}");
+        self.json(self.tasks_request(Method::GET, &path)).await
+    }
+
+    pub async fn create_task(&self, list: Uuid, t: &TaskWrite) -> Result<Task, DavError> {
+        let path = format!("/lists/{list}/tasks");
+        self.json(self.tasks_request(Method::POST, &path).json(t))
+            .await
+    }
+
+    /// With `if_match`, the service refuses (412) when the task's etag is no longer that one.
+    pub async fn replace_task(
+        &self,
+        id: Uuid,
+        t: &TaskWrite,
+        if_match: Option<&str>,
+    ) -> Result<Task, DavError> {
+        let req = self.tasks_request(Method::PUT, &format!("/tasks/{id}"));
+        self.json(guarded(req, if_match).json(t)).await
+    }
+
+    pub async fn delete_task(&self, id: Uuid, if_match: Option<&str>) -> Result<(), DavError> {
+        let req = self.tasks_request(Method::DELETE, &format!("/tasks/{id}"));
+        self.send(guarded(req, if_match)).await.map(|_| ())
+    }
+}
+
+fn guarded(req: RequestBuilder, if_match: Option<&str>) -> RequestBuilder {
+    match if_match {
+        Some(etag) => req.header(header::IF_MATCH, etag),
+        None => req,
     }
 }

@@ -9,11 +9,15 @@ use axum::{
     routing::post,
 };
 use caldav_bridge::{Config, app, build_state};
+use roxmltree::{Document, Node};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 pub const ALICE: Uuid = Uuid::from_u128(0xa11ce);
 pub const BOB: Uuid = Uuid::from_u128(0xb0b);
+
+pub const DAV: &str = "DAV:";
+pub const CALDAV: &str = "urn:ietf:params:xml:ns:caldav";
 
 const AUTH_SECRET: &str = "test-auth-secret-0001";
 const CALENDAR_SECRET: &str = "test-calendar-secret-0002";
@@ -174,4 +178,22 @@ impl Stack {
         let status = resp.status();
         (status, resp.json().await.unwrap_or(Value::Null))
     }
+}
+
+pub fn named<'a>(n: Node<'a, 'a>, ns: &str, name: &str) -> Option<Node<'a, 'a>> {
+    n.descendants().find(|d| {
+        d.is_element() && d.tag_name().name() == name && d.tag_name().namespace() == Some(ns)
+    })
+}
+
+pub fn text(n: Node, ns: &str, name: &str) -> String {
+    named(n, ns, name).unwrap().text().unwrap_or("").to_owned()
+}
+
+/// The `response` elements of a multistatus, keyed by their href.
+pub fn responses<'a>(doc: &'a Document) -> Vec<(String, Node<'a, 'a>)> {
+    doc.descendants()
+        .filter(|n| n.tag_name().name() == "response" && n.tag_name().namespace() == Some(DAV))
+        .map(|r| (text(r, DAV, "href"), r))
+        .collect()
 }
