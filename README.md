@@ -8,7 +8,7 @@ A personal suite of self-hosted services with a desktop client.
 | `auth-web`         | Web app for sign-in, sign-up and account management      | .NET Blazor Server    | working  |
 | `calendar-service` | Calendar REST API                                        | Rust                  | working  |
 | `tasks-service`    | Tasks REST API                                           | Rust                  | working  |
-| `caldav-bridge`    | CalDAV front-end over the calendar and tasks services    | Rust                  | planned  |
+| `caldav-bridge`    | CalDAV front-end over the calendar and tasks services    | Rust                  | working  |
 | `client`           | Desktop app: calendar, tasks, Gmail/Hotmail/Yahoo mail   | Rust + Slint          | planned  |
 
 Design documents live in [`docs/superpowers/specs`](docs/superpowers/specs).
@@ -27,6 +27,9 @@ Design documents live in [`docs/superpowers/specs`](docs/superpowers/specs).
 - `tasks-service/` — the tasks API: task lists per user, tasks with a due date or time, priority,
   reminders and completion, subtasks one level deep, recurring tasks, and a changes feed. It stores
   everything in SQLite under its data directory and accepts the access tokens of `auth-service`.
+- `caldav-bridge/` — CalDAV for clients such as Thunderbird. It stores nothing: it turns each CalDAV
+  request into calls to `calendar-service` and `tasks-service`, and checks every sign-in with
+  `auth-service`.
 - `common/` — Rust code shared with later services (API errors, the config loader, logging, token
   verification, caller identification, and the date/time and recurrence-rule helpers that the calendar and
   tasks services share).
@@ -50,12 +53,14 @@ cargo run -p auth-service -- auth-service/config.example.toml
 dotnet run --project auth-web
 cargo run -p calendar-service -- calendar-service/config.example.toml   # optional
 cargo run -p tasks-service -- tasks-service/config.example.toml         # optional
+cargo run -p caldav-bridge -- caldav-bridge/config.example.toml         # optional, needs the three above
 ```
 
 - `auth-web` (open this one): <http://localhost:5080>
 - `auth-service`: <http://localhost:8081> (API documentation at <http://localhost:8081/api/docs>)
 - `calendar-service`: <http://localhost:8083> (API documentation at <http://localhost:8083/api/docs>)
 - `tasks-service`: <http://localhost:8084> (API documentation at <http://localhost:8084/api/docs>)
+- `caldav-bridge`: <http://localhost:8085> (CalDAV under `/dav/`; it has no documentation page)
 
 On its first start with an empty data directory the service creates the admin user `wiertmir` and
 writes a warning line to its console that contains `one_time_password=…`. Sign in with that
@@ -135,7 +140,7 @@ nested table: `ME_CALENDAR__SERVICE_SECRET`, `ME_CALENDAR__DATA_DIR`,
 `ME_CALENDAR__LOG__FORMAT=json`.
 
 The API is under `/calendar/v1`. A caller sends either a bearer access token from `auth-service`, or
-(internal callers only, such as the planned CalDAV bridge) the headers `X-Service-Secret` and
+(internal callers only, such as `caldav-bridge`) the headers `X-Service-Secret` and
 `X-User-Id`. The service secret may be the same value as `auth-service`'s or a different one; only
 internal callers use it. Caddy removes those two headers from requests on the public route.
 
@@ -144,7 +149,7 @@ events, of which at most 1,000 are repeating ones.
 
 For the home-network setup (the scripts, the app host and Kubernetes) do this once before the first
 start of `calendar-service`. The scripts `1-run-local-auth.sh`, `2-run-local-auth-web.sh`,
-`3-run-local-calendar.sh`, `4-run-local-tasks.sh` and `5-run-caddy.sh` start the five processes of
+`3-run-local-calendar.sh`, `4-run-local-tasks.sh`, `5-run-local-caldav.sh` and `6-run-caddy.sh` start the six processes of
 that setup, each in its own terminal and in that order, Caddy last (`3-run-local-calendar.sh` runs
 `calendar-service`, like `1-run-local-auth.sh` runs `auth-service`):
 
@@ -175,7 +180,7 @@ Any value can be overridden by an environment variable named `ME_TASKS__<KEY>`, 
 nested table: `ME_TASKS__SERVICE_SECRET`, `ME_TASKS__DATA_DIR`, `ME_TASKS__LOG__FORMAT=json`.
 
 The API is under `/tasks/v1`. A caller sends either a bearer access token from `auth-service`, or
-(internal callers only, such as the planned CalDAV bridge) the headers `X-Service-Secret` and
+(internal callers only, such as `caldav-bridge`) the headers `X-Service-Secret` and
 `X-User-Id`. The service secret may be the same value as the other services' or a different one;
 only internal callers use it. Caddy removes those two headers from requests on the public route.
 
@@ -205,6 +210,41 @@ For the home-network setup do this once before the first start of `tasks-service
 - copy `tasks-service/config.example.toml` to `tasks-service/config.local.toml`, set `issuer` to the
   public origin and add `jwks_url = "http://127.0.0.1:8081/.well-known/jwks.json"`, as for
   `calendar-service`. Keep `data_dir = "./data"`, beside `auth.db`.
+
+### caldav-bridge
+
+The bridge reads the TOML file named as its first argument.
+[`caldav-bridge/config.example.toml`](caldav-bridge/config.example.toml) is a working development
+configuration. It keeps nothing on disk, so there is no data directory.
+
+| Key               | Meaning                                                                      |
+|-------------------|------------------------------------------------------------------------------|
+| `listen`          | Address to listen on (default `127.0.0.1:8085`)                              |
+| `auth_url`        | Internal address of `auth-service` (`http://127.0.0.1:8081`)                 |
+| `calendar_url`    | Internal address of `calendar-service` (`http://127.0.0.1:8083`)             |
+| `tasks_url`       | Internal address of `tasks-service` (`http://127.0.0.1:8084`)                |
+| `auth_secret`     | The service secret of `auth-service`                                         |
+| `calendar_secret` | The service secret of `calendar-service`                                     |
+| `tasks_secret`    | The service secret of `tasks-service`                                        |
+| `[log]`           | `format`, `level` and `dir`, as for the other services                       |
+
+Any value can be overridden by an environment variable named `ME_CALDAV__<KEY>`, with `__` for a
+nested table: `ME_CALDAV__AUTH_SECRET`, `ME_CALDAV__CALENDAR_SECRET`, `ME_CALDAV__TASKS_SECRET`,
+`ME_CALDAV__LOG__FORMAT=json`. The bridge refuses to start with the example secret on an address
+that is not loopback.
+
+The bridge is under `/dav/`. A client signs in with HTTP Basic: the user name (or the email address)
+and an app password, which the bridge checks with `auth-service` on every request. A deleted app
+password therefore stops working at once. Behind it the bridge calls the other two services with
+their service secrets, as the user the app password belongs to.
+
+For the home-network setup do this once before the first start of `caldav-bridge`:
+
+- copy `caldav-bridge/config.example.toml` to `caldav-bridge/config.local.toml`. Its addresses are
+  already right for the setup; its three placeholder secrets are replaced from `.env`
+  (`ME_AUTH__SERVICE_SECRET`, `ME_CALENDAR__SERVICE_SECRET` and `ME_TASKS__SERVICE_SECRET`) by
+  `5-run-local-caldav.sh`, by the app host and by `run-kubernetes.sh`, so nothing new goes into
+  `.env`.
 
 ### auth-web
 
@@ -266,9 +306,11 @@ The [`Caddyfile`](Caddyfile) serves the processes on one origin and provides TLS
 | Path                                      | Goes to                          |
 |-------------------------------------------|----------------------------------|
 | `/social/complete`                        | auth-web (`127.0.0.1:5080`)      |
-| `/oauth/*`, `/.well-known/*`, `/social/*` | auth-service (`127.0.0.1:8081`)  |
+| `/oauth/*`, other `/.well-known/*`, `/social/*` | auth-service (`127.0.0.1:8081`)  |
 | `/calendar/*`                             | calendar-service (`127.0.0.1:8083`) |
 | `/tasks/*`                                | tasks-service (`127.0.0.1:8084`) |
+| `/dav`, `/dav/*`                          | caldav-bridge (`127.0.0.1:8085`) |
+| `/.well-known/caldav`                     | redirect (301) to `/dav/`        |
 | `/api/*`                                  | nothing: answered with 404       |
 | everything else                           | auth-web (`127.0.0.1:5080`)      |
 
@@ -293,6 +335,44 @@ social sign-in and link tickets (`/social/complete`, `/account/security`, `/soci
 `/social/…/callback`) and the sign-in challenge (`/signin`). They are short-lived and single-use,
 but treat such a log as sensitive, or leave the query string out of it.
 
+## Connecting Thunderbird
+
+`caldav-bridge` lets a CalDAV client use the calendars and task lists of `calendar-service` and
+`tasks-service`. It needs the other services, auth-web and Caddy running (`/dav/` is served on the same origin).
+
+1. In auth-web open Account, then App passwords, and create one. Thunderbird gets this, not your
+   password.
+2. In Thunderbird choose Calendar, New Calendar, On the Network. Enter your user name (or email
+   address) and, as the location, `https://<host>`. Enter the app password when asked, then tick the
+   calendars and task lists that are found.
+3. Check that it works:
+   - an event created in Thunderbird appears in `GET /calendar/v1/…`, and an event created there
+     appears in Thunderbird;
+   - a repeating event in which you move one occurrence shows the moved occurrence in both;
+   - a to-do completed in Thunderbird is completed in `tasks-service`;
+   - a repeating task shows in Thunderbird as plain to-dos: the next one arrives after its
+     predecessor's due date has passed and Thunderbird has synchronised.
+
+How it behaves:
+
+- After a write the client reads the item back (the bridge answers a write without an etag), so what
+  Thunderbird shows is what is stored. Properties the services do not keep (attendees, categories,
+  a to-do's start date and so on) disappear from the item at that point.
+- A repeating to-do shows as plain to-dos; its rule is not shown or editable over CalDAV. A to-do
+  created with a repeat rule but no due date is stored as a plain to-do, and removing the due date
+  from a repeating to-do ends its series.
+- A recurring event with changed occurrences is written in several steps. If one fails midway the
+  event is left partly updated, and the client reloads that state.
+
+Refused with an error: floating times (a time with no zone), zones that are not IANA names,
+`RDATE`, `EXRULE`, more than one `RRULE`, "this and following" changes of a series
+(`RANGE=THISANDFUTURE`), a changed occurrence that is all-day when its series is not (or the
+reverse), and a timed event with no end and no duration.
+
+Not supported: creating, renaming or deleting calendars and task lists from the client, invitations,
+free/busy, incremental sync reports, time-zone definitions in the files, filters in queries. It has
+not been tried with phones.
+
 ## Running in production
 
 Build once:
@@ -301,6 +381,7 @@ Build once:
 cargo build --release -p auth-service              # → target/release/auth-service
 cargo build --release -p calendar-service          # → target/release/calendar-service
 cargo build --release -p tasks-service             # → target/release/tasks-service
+cargo build --release -p caldav-bridge             # → target/release/caldav-bridge
 dotnet publish auth-web -c Release -o /opt/me/auth-web
 openssl rand -base64 32                            # a service secret
 ```
@@ -339,21 +420,29 @@ Start `tasks-service` the same way, with `listen = "127.0.0.1:8084"` in its own 
 ME_TASKS__SERVICE_SECRET='<a secret>' target/release/tasks-service /etc/me/tasks.toml
 ```
 
+Start `caldav-bridge` with `listen = "127.0.0.1:8085"` and the addresses of the three services in its
+own file, and the three secrets of those services:
+
+```sh
+ME_CALDAV__AUTH_SECRET='<auth-service secret>' ME_CALDAV__CALENDAR_SECRET='<calendar secret>' \
+ME_CALDAV__TASKS_SECRET='<tasks secret>' target/release/caldav-bridge /etc/me/caldav.toml
+```
+
 - `AuthService__Secret` is required (at least 16 characters) and must equal `service_secret` of
   `auth-service`. Neither service accepts the example secret on a non-loopback address.
 - `ME_CALENDAR__SERVICE_SECRET` is the secret of `calendar-service`'s internal callers (at least 16
   characters); it may be the same value or a different one. `ME_TASKS__SERVICE_SECRET` is the same
-  for `tasks-service`.
+  for `tasks-service`. `caldav-bridge` has no secret of its own; it takes the three above.
 - `DataProtection__Path` must be a directory that survives restarts and that only this process's
   user can read. The default (`./data/dp-keys`) is relative to the directory you start it in.
-- All four processes listen on loopback (`127.0.0.1`) and speak plain HTTP; the proxy in front is
+- All five processes listen on loopback (`127.0.0.1`) and speak plain HTTP; the proxy in front is
   the only thing that should be reachable from outside, and it provides TLS. In `Production`,
   `auth-web` serves only requests that the proxy reports as HTTPS (`X-Forwarded-Proto: https`);
   a plain-HTTP request sent straight to port 5080 fails.
-- Set `LOG_FORMAT=json`, `ME_AUTH__LOG__FORMAT=json`, `ME_CALENDAR__LOG__FORMAT=json` and `ME_TASKS__LOG__FORMAT=json` if a log
+- Set `LOG_FORMAT=json`, `ME_AUTH__LOG__FORMAT=json`, `ME_CALENDAR__LOG__FORMAT=json` and `ME_TASKS__LOG__FORMAT=json` (and `ME_CALDAV__LOG__FORMAT=json`) if a log
   collector reads the output.
 
-Run all four under a process supervisor of your choice so that they restart; none daemonises.
+Run all five under a process supervisor of your choice so that they restart; none daemonises.
 
 ## Running under .NET Aspire
 
@@ -361,18 +450,18 @@ Run all four under a process supervisor of your choice so that they restart; non
 dotnet run --project apphost
 ```
 
-runs the home-network setup, the same five processes as the `N-run-*.sh` scripts (`auth-service`,
-`calendar-service`, `tasks-service`, `auth-web` in `Production`, Caddy), with the same `.env`,
+runs the home-network setup, the same six processes as the `N-run-*.sh` scripts (`auth-service`,
+`calendar-service`, `tasks-service`, `caldav-bridge`, `auth-web` in `Production`, Caddy), with the same `.env`,
 `auth-service/config.local.toml`, `calendar-service/config.local.toml`,
-`tasks-service/config.local.toml`, `Caddyfile` and data
+`tasks-service/config.local.toml`, `caldav-bridge/config.local.toml`, `Caddyfile` and data
 directories. Stop the scripts or the Kubernetes cluster first; they use the same ports. The console
 prints the login link of the Aspire dashboard (`http://localhost:15080/login?t=…`), which shows:
 
-- Resources: the five processes with their state, start/stop/restart and console logs, and under
-  Graph how they depend on each other (Caddy on all four, `auth-web`, `calendar-service` and
-  `tasks-service` on `auth-service`);
+- Resources: the six processes with their state, start/stop/restart and console logs, and under
+  Graph how they depend on each other (Caddy on all five, `auth-web`, `calendar-service` and
+  `tasks-service` on `auth-service`, `caldav-bridge` on the three services);
 - Traces: every request as one trace across `auth-web` and `auth-service`, and the requests to
-  `calendar-service` and `tasks-service`.
+  `calendar-service`, `tasks-service` and `caldav-bridge`.
 
 `auth-service` is started with `cargo run --release`; the others wait until its `/health` answers.
 
@@ -389,7 +478,7 @@ every process.
 
 - `auth-web` records a span per request and per call to `auth-service`, and sends the trace context
   along, so the service's span joins the same trace.
-- `auth-service`, `calendar-service` and `tasks-service` record a span per request, named by method and route
+- `auth-service`, `calendar-service`, `tasks-service` and `caldav-bridge` record a span per request, named by method and route
   template, with the request's log events attached.
 - The rules for logs hold for traces: no query strings, and for calls to `auth-service` only the
   origin, never the path, since both can carry one-time tokens.
@@ -397,18 +486,19 @@ every process.
 ## Running on local Kubernetes
 
 `./run-kubernetes.sh` runs the same setup on a local [kind](https://kind.sigs.k8s.io) cluster named
-`me` (needs Docker, `kind` and `kubectl`). It builds the four images
+`me` (needs Docker, `kind` and `kubectl`). It builds the five images
 ([`auth-service/Dockerfile`](auth-service/Dockerfile),
 [`calendar-service/Dockerfile`](calendar-service/Dockerfile),
 [`tasks-service/Dockerfile`](tasks-service/Dockerfile),
+[`caldav-bridge/Dockerfile`](caldav-bridge/Dockerfile),
 [`auth-web/Dockerfile`](auth-web/Dockerfile)), loads them into the cluster and applies [`k8s/me.yaml`](k8s/me.yaml). Run it again after a code or
 configuration change.
 
-The services (`auth-service`, `calendar-service`, `tasks-service`, `auth-web`) and Caddy are five containers of one pod. They share its network, so they talk
+The services (`auth-service`, `calendar-service`, `tasks-service`, `caldav-bridge`, `auth-web`) and Caddy are six containers of one pod. They share its network, so they talk
 over loopback as the plain processes do and only Caddy's ports 80 and 443 are published, on every
 address of the machine (Docker publishes them itself, past a host firewall such as `ufw`).
 
-A sixth container is the Aspire dashboard, to which the services send their traces:
+A seventh container is the Aspire dashboard, to which the services send their traces:
 <http://localhost:18888>. It has no sign-in, so its port is published on this machine's loopback
 only, and it keeps traces in memory (they are gone when the pod restarts). It opens on the
 Structured logs page, which stays empty; the data is on the Traces page, once requests have been
@@ -416,13 +506,13 @@ made. Sending telemetry to it needs a key that the script generates on every run
 
 The script takes its settings from the files the plain processes use: `.env` (as the secret
 `me-env`), `auth-service/config.local.toml`, `calendar-service/config.local.toml`,
-`tasks-service/config.local.toml` and the `Caddyfile` (as the config map `me-config`). The data directories are the same ones too (`./data`,
+`tasks-service/config.local.toml`, `caldav-bridge/config.local.toml` and the `Caddyfile` (as the config map `me-config`). The data directories are the same ones too (`./data`,
 `auth-web/data/dp-keys`, Caddy's `~/.local/share/caddy`), mounted into the cluster and written as
 user id 1000. So accounts, sessions and the certificate carry over in both directions, and only one
 of the two ways can run at a time.
 
 ```sh
-kubectl --context kind-me -n me logs deploy/auth -c auth-service -f    # or -c calendar-service, -c tasks-service, -c auth-web, -c caddy
+kubectl --context kind-me -n me logs deploy/auth -c auth-service -f    # or -c calendar-service, -c tasks-service, -c caldav-bridge, -c auth-web, -c caddy
 kubectl --context kind-me -n me exec deploy/auth -c auth-service -- \
   auth-service /etc/me/config.toml reset-password wiertmir             # see "Locked out"
 docker stop me-control-plane          # stop (frees ports 80 and 443); `docker start` resumes
@@ -499,15 +589,16 @@ All processes log to the console.
   or `ME_AUTH__LOG__FORMAT=json`.
 - `calendar-service`: the same keys under `[log]`; `ME_CALENDAR__LOG__FORMAT=json`.
 - `tasks-service`: the same keys under `[log]`; `ME_TASKS__LOG__FORMAT=json`.
+- `caldav-bridge`: the same keys under `[log]`; `ME_CALDAV__LOG__FORMAT=json`.
 - `auth-web` (Serilog): set the environment variable `LOG_FORMAT=json` for JSON lines; anything
   else gives the coloured console format. The level is `debug`, except for the framework's own
   loggers (`Microsoft.AspNetCore`, `System.Net.Http`), which are held at warning because below
   that they print request URLs, and those carry one-time tokens. One line per request is logged
   with the path only, never the query string.
 
-**Log files.** Each of the four can also write its log to a file per day, with the same lines as
+**Log files.** Each of the five can also write its log to a file per day, with the same lines as
 on the console and without colours: `auth-service-YYYYMMDD.log`, `calendar-service-YYYYMMDD.log`,
-`tasks-service-YYYYMMDD.log` and `auth-web-YYYYMMDD.log`. A new file starts at local midnight and the newest 31 of each are
+`tasks-service-YYYYMMDD.log`, `caldav-bridge-YYYYMMDD.log` and `auth-web-YYYYMMDD.log`. A new file starts at local midnight and the newest 31 of each are
 kept. Nothing is written unless a directory is named:
 
 | Process            | Setting                                             |
@@ -515,10 +606,11 @@ kept. Nothing is written unless a directory is named:
 | `auth-service`     | `[log] dir = "…"`, or `ME_AUTH__LOG__DIR`           |
 | `calendar-service` | `[log] dir = "…"`, or `ME_CALENDAR__LOG__DIR`       |
 | `tasks-service`    | `[log] dir = "…"`, or `ME_TASKS__LOG__DIR`          |
+| `caldav-bridge`    | `[log] dir = "…"`, or `ME_CALDAV__LOG__DIR`         |
 | `auth-web`         | the environment variable `LOG_DIR`                  |
 
 The run scripts (`1-run-local-auth.sh`, `2-run-local-auth-web.sh`, `3-run-local-calendar.sh`,
-`4-run-local-tasks.sh`) and the Aspire app host set all four to `logs/` in the repository root, unless `.env` names another
+`4-run-local-tasks.sh`, `5-run-local-caldav.sh`) and the Aspire app host set all five to `logs/` in the repository root, unless `.env` names another
 directory. On Kubernetes nothing is set; read the logs with `kubectl logs`. A directory that cannot
 be written is reported once at start-up and the process runs on with the console log alone. Caddy
 is not covered. The files hold what the console shows, so on a first start that includes the

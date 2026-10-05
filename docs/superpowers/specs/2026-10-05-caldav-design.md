@@ -1,7 +1,7 @@
 # Me — CalDAV bridge: design
 
 Date: 2026-10-05
-Status: approved, not yet implemented
+Status: implemented
 
 ## Context
 
@@ -139,11 +139,12 @@ that way; it lets the bridge find an item without storing anything.
 | `REPORT` `calendar-multiget` | a collection | The named items with their data |
 | `REPORT` `calendar-query` | a collection | Every item of the collection with the requested properties |
 | `GET` | an item | The iCalendar text, with `ETag` |
-| `PUT` | an item | Create or replace; honours `If-Match` and `If-None-Match: *` |
+| `PUT` | an item | Create or replace; honours `If-Match` and `If-None-Match: *`. Answers 201 or 204 without an `ETag`, because what is stored always differs from the body sent; the client reads the item back |
 | `DELETE` | an item | Delete; honours `If-Match` |
 
 Anything else is 405. `PROPFIND` with depth `infinity` is 403. Request bodies
-are limited to 1 MB.
+are limited to 1 MB. Text placed into XML answers has the characters XML 1.0
+forbids removed.
 
 Properties answered (others are reported as not found):
 
@@ -174,8 +175,10 @@ a series with its overrides, as one `VCALENDAR`.
 Reading what a client sends:
 
 - `DTSTART` and `DTEND` with a `Z` are stored with `tz` `UTC`.
-- A `DURATION` instead of `DTEND` is added to the start. An all-day event
-  without either lasts one day.
+- A `DURATION` instead of `DTEND` is added to the start: its week and day part
+  on the wall clock, its hour, minute and second part as exact time. An
+  all-day event without either lasts one day. A UTC time is written back with
+  `Z`.
 - A `VALARM` with a `TRIGGER` relative to the start, zero or negative, in whole
   minutes, becomes a reminder; any other alarm is dropped.
 - Dropped without an error: attendees, organiser, categories, status,
@@ -183,7 +186,8 @@ Reading what a client sends:
   every other property not in the table.
 - Refused, because dropping them would change when the event happens: a `TZID`
   that is not an IANA zone name; a time without `Z` and without `TZID`
-  (floating); `RDATE`; more than one `RRULE`; an `EXRULE`.
+  (floating); `RDATE`; more than one `RRULE`; an `EXRULE`; `RANGE=THISANDFUTURE`;
+  a body nested more than 8 components deep.
 
 **Writing an item** is several calls to calendar-service:
 
@@ -192,9 +196,13 @@ Reading what a client sends:
 3. For each override in the body: create it, or replace it when one with that
    `RECURRENCE-ID` is stored. Delete stored overrides the body no longer has.
 
-This is not atomic. When a call fails, the bridge stops and answers with that
-error; what was written stays, and the client, which did not get a new etag,
-sends the item again.
+It is not atomic. When a call fails the bridge stops and answers with that
+error, and what was written stays. Because the item's etag has then changed, a
+client that retries with `If-Match` is told the item changed and reloads it.
+Two refusals the bridge can tell from the body alone, changed occurrences on an
+event without a rule and a changed occurrence whose all-day form differs from
+its series', are checked before anything is written. One atomic write in
+calendar-service would remove the limit.
 
 **Etag of an item:** the highest revision among the stored events it is made
 of, and their number. Every write takes a new, higher revision and a removed
@@ -231,8 +239,11 @@ Reading what a client sends:
 **Repeat rules** are never sent to the client: every task appears as a plain
 to-do, and the next one of a series appears at the synchronisation after the
 server has created it. A `RRULE` in a to-do the client creates is stored with
-the task. When the client changes an existing to-do, the bridge sends the
-stored rule back to the service unchanged, whatever the body says.
+the task; a rule sent without a due date is dropped and the to-do stored plain.
+When the client changes an existing to-do, the bridge sends the
+stored rule back to the service unchanged, whatever the body says. When a change removes the due date of a task that has
+a rule, the rule is dropped with it. `If-Match` on a to-do is passed on to
+tasks-service (an event item's is compared by the bridge).
 
 **Subtasks.** `RELATED-TO` in a to-do the client creates makes it a subtask
 when a task with that uid is in the same list and the service accepts it;
@@ -253,8 +264,9 @@ is kept, whatever the body says.
 ### Logging
 
 As the other services, through `common`: one line group per request with the
-method, the path with ids but without the item name, status and duration.
-Writes are logged at info with `user_id` and the calendar or list id. The
+method, the route, status and duration. The request line shows the route
+(`/dav/{*rest}`), so neither item names nor ids appear on it. Each write logs
+one line, at info, with `user_id` and the calendar or list id. The
 `Authorization` header, item names (they are uids chosen by the user's program)
 and item bodies are never logged.
 

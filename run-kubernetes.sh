@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs auth-service, calendar-service, tasks-service, auth-web and Caddy on a local Kubernetes cluster (kind), as an
+# Runs auth-service, calendar-service, tasks-service, caldav-bridge, auth-web and Caddy on a local Kubernetes cluster (kind), as an
 # alternative to the N-run-*.sh scripts. Same address, same .env, same data directories, so stop those first.
 # Run it again after a code change: it rebuilds the images and restarts the pod.
 #   stop:   docker stop me-control-plane      (start again with: docker start me-control-plane)
@@ -30,8 +30,9 @@ fi
 docker build -q -f auth-service/Dockerfile -t me/auth-service:dev .
 docker build -q -f calendar-service/Dockerfile -t me/calendar-service:dev .
 docker build -q -f tasks-service/Dockerfile -t me/tasks-service:dev .
+docker build -q -f caldav-bridge/Dockerfile -t me/caldav-bridge:dev .
 docker build -q -f auth-web/Dockerfile -t me/auth-web:dev .
-kind load docker-image --name me me/auth-service:dev me/calendar-service:dev me/tasks-service:dev me/auth-web:dev
+kind load docker-image --name me me/auth-service:dev me/calendar-service:dev me/tasks-service:dev me/caldav-bridge:dev me/auth-web:dev
 
 $K create namespace me --dry-run=client -o yaml | $K apply -f -
 TZ_NAME=$(timedatectl show -p Timezone --value 2>/dev/null || echo UTC)
@@ -40,10 +41,11 @@ $K -n me create secret generic me-env --from-env-file=<(cat .env; echo "TZ=$TZ_N
   --dry-run=client -o yaml | $K apply -f -
 $K -n me create configmap me-config --from-file=config.toml=auth-service/config.local.toml \
   --from-file=calendar.toml=calendar-service/config.local.toml \
-  --from-file=tasks.toml=tasks-service/config.local.toml --from-file=Caddyfile \
+  --from-file=tasks.toml=tasks-service/config.local.toml \
+  --from-file=caldav.toml=caldav-bridge/config.local.toml --from-file=Caddyfile \
   --dry-run=client -o yaml | $K apply -f -
 $K apply -f k8s/me.yaml
 $K -n me rollout restart deployment/auth
 $K -n me rollout status deployment/auth --timeout=120s
-echo "Logs:   $K -n me logs deploy/auth -c auth-service|calendar-service|tasks-service|auth-web|caddy -f"
+echo "Logs:   $K -n me logs deploy/auth -c auth-service|calendar-service|tasks-service|caldav-bridge|auth-web|caddy -f"
 echo "Traces: http://localhost:18888"
