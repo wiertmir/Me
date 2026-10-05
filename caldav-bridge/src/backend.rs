@@ -210,3 +210,88 @@ fn guarded(req: RequestBuilder, if_match: Option<&str>) -> RequestBuilder {
         None => req,
     }
 }
+
+/// A stored event as calendar-service answers it: a single event, a series, or an override of one
+/// occurrence of a series.
+#[derive(Deserialize, Clone)]
+pub struct Event {
+    pub id: Uuid,
+    pub uid: String,
+    pub summary: String,
+    pub description: String,
+    pub location: String,
+    pub all_day: bool,
+    pub start: String,
+    pub end: String,
+    pub tz: Option<String>,
+    pub rrule: Option<String>,
+    pub exdates: Vec<String>,
+    pub reminders: Vec<u32>,
+    pub recurring_event_id: Option<Uuid>,
+    pub original_start: Option<String>,
+    pub etag: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// What calendar-service takes for an event. On a replace, `uid` left out stays as stored.
+#[derive(Serialize, Default, Clone, PartialEq)]
+pub struct EventWrite {
+    pub uid: Option<String>,
+    pub summary: String,
+    pub description: String,
+    pub location: String,
+    pub all_day: bool,
+    pub start: String,
+    pub end: String,
+    pub tz: Option<String>,
+    pub rrule: Option<String>,
+    pub exdates: Vec<String>,
+    pub reminders: Vec<u32>,
+    pub recurring_event_id: Option<Uuid>,
+    pub original_start: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EventChanges {
+    sync_token: i64,
+    events: Vec<Event>,
+}
+
+impl Backend<'_> {
+    fn calendar_request(&self, method: Method, path: &str) -> RequestBuilder {
+        self.request(Service::Calendar, method, &format!("/calendar/v1{path}"))
+    }
+
+    /// The calendar's sync token and every stored event in it, series and overrides as stored.
+    pub async fn events(&self, cal: Uuid) -> Result<(i64, Vec<Event>), DavError> {
+        let path = format!("/calendars/{cal}/changes");
+        let c: EventChanges = self.json(self.calendar_request(Method::GET, &path)).await?;
+        Ok((c.sync_token, c.events))
+    }
+
+    /// What is stored under a uid: the single event or the series first, then its overrides.
+    pub async fn events_by_uid(&self, cal: Uuid, uid: &str) -> Result<Vec<Event>, DavError> {
+        let uid = utf8_percent_encode(uid, NON_ALPHANUMERIC);
+        let path = format!("/calendars/{cal}/by-uid?uid={uid}");
+        self.json(self.calendar_request(Method::GET, &path)).await
+    }
+
+    pub async fn create_event(&self, cal: Uuid, e: &EventWrite) -> Result<Event, DavError> {
+        let path = format!("/calendars/{cal}/events");
+        self.json(self.calendar_request(Method::POST, &path).json(e))
+            .await
+    }
+
+    pub async fn replace_event(&self, id: Uuid, e: &EventWrite) -> Result<Event, DavError> {
+        let path = format!("/events/{id}");
+        self.json(self.calendar_request(Method::PUT, &path).json(e))
+            .await
+    }
+
+    /// Deleting a series deletes its overrides.
+    pub async fn delete_event(&self, id: Uuid) -> Result<(), DavError> {
+        let path = format!("/events/{id}");
+        let req = self.calendar_request(Method::DELETE, &path);
+        self.send(req).await.map(|_| ())
+    }
+}

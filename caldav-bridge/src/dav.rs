@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::{
     body::Bytes,
@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     AppState, DavError,
     auth::Signed,
-    backend::{Backend, Collection, Task},
+    backend::{Backend, Collection, Event, Task},
     ical,
     path::{self, Kind, Target},
     xml::{self, Prop, ReportReq},
@@ -57,9 +57,7 @@ pub async fn handle(
     match (method.as_str(), path::parse(uri.path(), user)) {
         ("PROPFIND" | "REPORT" | "GET" | "PUT" | "DELETE", None) => Err(not_found()),
         ("PROPFIND", Some(target)) => propfind(&b, user, target, &headers, &body).await,
-        ("REPORT", Some(Target::Collection(Kind::Todos, list))) => {
-            report(&b, user, list, &body).await
-        }
+        ("REPORT", Some(Target::Collection(kind, id))) => report(&b, user, kind, id, &body).await,
         ("GET", Some(Target::Item(Kind::Todos, list, uid))) => get_todo(&b, list, &uid).await,
         ("PUT", Some(Target::Item(Kind::Todos, list, uid))) => {
             let answer = put_todo(&b, list, &uid, &headers, &body).await?;
@@ -68,9 +66,23 @@ pub async fn handle(
         }
         ("DELETE", Some(Target::Item(Kind::Todos, list, uid))) => {
             let old = b.task_by_uid(list, &uid).await?.ok_or_else(not_found)?;
-            let guard = if_match(&headers, Some(&old))?;
+            let guard = if_match(&headers, Some(&old.etag))?;
             b.delete_task(old.id, guard).await?;
             tracing::info!(event = "todo_deleted", user_id = %signed.user_id, list_id = %list);
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        ("GET", Some(Target::Item(Kind::Events, cal, uid))) => get_event(&b, cal, &uid).await,
+        ("PUT", Some(Target::Item(Kind::Events, cal, uid))) => {
+            let answer = put_event(&b, cal, &uid, &headers, &body).await?;
+            tracing::info!(event = "event_written", user_id = %signed.user_id, calendar_id = %cal);
+            Ok(answer)
+        }
+        ("DELETE", Some(Target::Item(Kind::Events, cal, uid))) => {
+            let parts = stored_event(&b, cal, &uid, &headers).await?;
+            // The service deletes a series' overrides with it.
+            b.delete_event(parts.first().ok_or_else(not_found)?.id)
+                .await?;
+            tracing::info!(event = "event_deleted", user_id = %signed.user_id, calendar_id = %cal);
             Ok(StatusCode::NO_CONTENT.into_response())
         }
         _ => Err(DavError::new(
@@ -97,17 +109,26 @@ fn header_text(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
 /// 412 unless `If-Match` is absent, or names the stored item's etag (`*`: any stored item). With the header,
 /// the answer is the etag to hold the service to, so that a change in between is refused there.
 #[allow(clippy::result_large_err)] // as above
-fn if_match<'a>(
-    headers: &HeaderMap,
-    stored: Option<&'a Task>,
-) -> Result<Option<&'a str>, DavError> {
+fn if_match<'a>(headers: &HeaderMap, stored: Option<&'a str>) -> Result<Option<&'a str>, DavError> {
     let Some(wanted) = header_text(headers, header::IF_MATCH) else {
         return Ok(None);
     };
     match stored {
-        Some(t) if wanted == "*" || wanted == t.etag => Ok(Some(&t.etag)),
+        Some(etag) if wanted == "*" || wanted == etag => Ok(Some(etag)),
         _ => Err(DavError::new(StatusCode::PRECONDITION_FAILED, "")),
     }
+}
+
+/// 403 unless the item is named after the uid in its body: that is how an item is found again.
+#[allow(clippy::result_large_err)] // as above
+fn named_by_uid(name: &str, uid: &str) -> Result<(), DavError> {
+    if name == uid {
+        return Ok(());
+    }
+    Err(
+        DavError::new(StatusCode::FORBIDDEN, "the name must be the UID and .ics")
+            .precondition("valid-calendar-object-resource"),
+    )
 }
 
 async fn get_todo(b: &Backend<'_>, list: Uuid, uid: &str) -> Result<Response, DavError> {
@@ -132,14 +153,9 @@ async fn put_todo(
     body: &[u8],
 ) -> Result<Response, DavError> {
     let todo = ical::ical_to_todo(utf8(body)?)?;
-    if todo.uid != uid {
-        return Err(
-            DavError::new(StatusCode::FORBIDDEN, "the name must be the UID and .ics")
-                .precondition("valid-calendar-object-resource"),
-        );
-    }
+    named_by_uid(uid, &todo.uid)?;
     let stored = b.task_by_uid(list, uid).await?;
-    let guard = if_match(headers, stored.as_ref())?;
+    let guard = if_match(headers, stored.as_ref().map(|t| t.etag.as_str()))?;
     if stored.is_some() && header_text(headers, header::IF_NONE_MATCH) == Some("*") {
         return Err(DavError::new(StatusCode::PRECONDITION_FAILED, ""));
     }
@@ -170,6 +186,77 @@ async fn put_todo(
     Ok(status.into_response())
 }
 
+/// What is stored under a uid, the single event or the series first; empty when there is nothing. 412
+/// unless that satisfies `If-Match`.
+// ponytail: `If-Match` is compared here, against what was just looked up, and the service calls that follow
+// are sent without it, so two writers in the same instant can both pass; pass the series' etag through to
+// the service if that ever matters.
+async fn stored_event(
+    b: &Backend<'_>,
+    cal: Uuid,
+    uid: &str,
+    headers: &HeaderMap,
+) -> Result<Vec<Event>, DavError> {
+    let parts = b.events_by_uid(cal, uid).await?;
+    let etag = (!parts.is_empty()).then(|| ical::item_etag(&parts));
+    if_match(headers, etag.as_deref())?;
+    Ok(parts)
+}
+
+async fn get_event(b: &Backend<'_>, cal: Uuid, uid: &str) -> Result<Response, DavError> {
+    let parts = b.events_by_uid(cal, uid).await?;
+    if parts.is_empty() {
+        return Err(not_found());
+    }
+    let headers = [
+        (header::CONTENT_TYPE, CALENDAR_TYPE.to_owned()),
+        (header::ETAG, ical::item_etag(&parts)),
+    ];
+    Ok((headers, ical::events_to_ical(&parts)).into_response())
+}
+
+async fn put_event(
+    b: &Backend<'_>,
+    cal: Uuid,
+    uid: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<Response, DavError> {
+    let item = ical::ical_to_events(utf8(body)?)?;
+    named_by_uid(uid, &item.uid)?;
+    let stored = stored_event(b, cal, uid, headers).await?;
+    if !stored.is_empty() && header_text(headers, header::IF_NONE_MATCH) == Some("*") {
+        return Err(DavError::new(StatusCode::PRECONDITION_FAILED, ""));
+    }
+    let status = match stored.first() {
+        Some(old) => {
+            b.replace_event(old.id, &item.main).await?;
+            StatusCode::NO_CONTENT
+        }
+        None => {
+            b.create_event(cal, &item.main).await?;
+            StatusCode::CREATED
+        }
+    };
+    // No `ETag`: what is stored is not the body as sent, so the client reads the item back.
+    Ok(status.into_response())
+}
+
+/// The stored events of a calendar as items: under each uid the single event or the series, then its
+/// overrides.
+fn items(events: Vec<Event>) -> Vec<Vec<Event>> {
+    let mut by_uid: BTreeMap<String, Vec<Event>> = BTreeMap::new();
+    for e in events {
+        by_uid.entry(e.uid.clone()).or_default().push(e);
+    }
+    let mut items: Vec<_> = by_uid.into_values().collect();
+    for parts in &mut items {
+        // Only an override has an `original_start`.
+        parts.sort_by(|a, b| a.original_start.cmp(&b.original_start));
+    }
+    items
+}
+
 /// One `response` of a multistatus: a root, the principal, the home, a collection or an item.
 struct Entry {
     target: Target,
@@ -188,6 +275,16 @@ impl Entry {
         let etag = t.etag.clone();
         Entry {
             target: Target::Item(Kind::Todos, list, t.uid.clone()),
+            collection: None,
+            item: Some(Item { etag, data }),
+        }
+    }
+
+    /// `parts` as `items` gives them, so not empty.
+    fn event(cal: Uuid, parts: &[Event], data: Option<String>) -> Self {
+        let etag = ical::item_etag(parts);
+        Entry {
+            target: Target::Item(Kind::Events, cal, parts[0].uid.clone()),
             collection: None,
             item: Some(Item { etag, data }),
         }
@@ -280,49 +377,79 @@ async fn propfind(
                 .into_iter()
                 .find(|c| c.kind == kind && c.id == id)
                 .ok_or_else(not_found)?;
-            let mut items = Vec::new();
-            if depth == 1 && kind == Kind::Todos {
-                // The change marker read with the items is the one they belong to.
-                let (token, tasks) = b.tasks(id).await?;
-                c.sync_token = token;
-                items.extend(tasks.iter().map(|t| Entry::todo(id, t, None)));
+            let mut listed = Vec::new();
+            // The change marker read with the items is the one they belong to.
+            match kind {
+                _ if depth == 0 => {}
+                Kind::Todos => {
+                    let (token, tasks) = b.tasks(id).await?;
+                    c.sync_token = token;
+                    listed.extend(tasks.iter().map(|t| Entry::todo(id, t, None)));
+                }
+                Kind::Events => {
+                    let (token, events) = b.events(id).await?;
+                    c.sync_token = token;
+                    let events = items(events);
+                    listed.extend(events.iter().map(|parts| Entry::event(id, parts, None)));
+                }
             }
             entries.push(Entry {
                 collection: Some(c),
                 ..plain(target)
             });
-            entries.append(&mut items);
+            entries.append(&mut listed);
         }
         Target::Item(Kind::Todos, list, ref uid) => {
             let t = b.task_by_uid(list, uid).await?.ok_or_else(not_found)?;
             entries.push(Entry::todo(list, &t, None));
         }
-        Target::Item(Kind::Events, ..) => return Err(not_found()),
+        Target::Item(Kind::Events, cal, ref uid) => {
+            let parts = b.events_by_uid(cal, uid).await?;
+            if parts.is_empty() {
+                return Err(not_found());
+            }
+            entries.push(Entry::event(cal, &parts, None));
+        }
     }
     Ok(multistatus(&entries, asked.as_deref(), username))
 }
 
-/// Both reports of a task list from one listing of it; a query's filter is not read.
+/// Both reports of a collection from one listing of it; a query's filter is not read.
 async fn report(
     b: &Backend<'_>,
     username: &str,
-    list: Uuid,
+    kind: Kind,
+    id: Uuid,
     body: &[u8],
 ) -> Result<Response, DavError> {
     let req = xml::read_report(utf8(body)?)?;
-    let (_, tasks) = b.tasks(list).await?;
-    let uids: HashMap<Uuid, &str> = tasks.iter().map(|t| (t.id, t.uid.as_str())).collect();
-    let entry = |t: &Task| {
-        let parent = t.parent_id.and_then(|p| uids.get(&p).copied());
-        Entry::todo(list, t, Some(ical::todo_to_ical(t, parent)))
+    let entries: Vec<Entry> = match kind {
+        Kind::Todos => {
+            let (_, tasks) = b.tasks(id).await?;
+            let uids: HashMap<Uuid, &str> = tasks.iter().map(|t| (t.id, t.uid.as_str())).collect();
+            let entry = |t: &Task| {
+                let parent = t.parent_id.and_then(|p| uids.get(&p).copied());
+                Entry::todo(id, t, Some(ical::todo_to_ical(t, parent)))
+            };
+            tasks.iter().map(entry).collect()
+        }
+        Kind::Events => {
+            let (_, events) = b.events(id).await?;
+            let entry =
+                |parts: &Vec<Event>| Entry::event(id, parts, Some(ical::events_to_ical(parts)));
+            items(events).iter().map(entry).collect()
+        }
     };
     match req {
-        ReportReq::Query { props } => {
-            let entries: Vec<_> = tasks.iter().map(entry).collect();
-            Ok(multistatus(&entries, Some(&props), username))
-        }
+        ReportReq::Query { props } => Ok(multistatus(&entries, Some(&props), username)),
         ReportReq::Multiget { props, hrefs } => {
-            let by_uid: HashMap<&str, &Task> = tasks.iter().map(|t| (t.uid.as_str(), t)).collect();
+            let by_uid: HashMap<&str, &Entry> = entries
+                .iter()
+                .filter_map(|e| match &e.target {
+                    Target::Item(_, _, uid) => Some((uid.as_str(), e)),
+                    _ => None,
+                })
+                .collect();
             let responses: Vec<_> = hrefs
                 .into_iter()
                 .map(|href| {
@@ -333,14 +460,14 @@ async fn report(
                         }
                         _ => &href,
                     };
-                    let task = match path::parse(path, username) {
-                        Some(Target::Item(Kind::Todos, l, uid)) if l == list => {
+                    let entry = match path::parse(path, username) {
+                        Some(Target::Item(k, c, uid)) if k == kind && c == id => {
                             by_uid.get(uid.as_str())
                         }
                         _ => None,
                     };
-                    match task {
-                        Some(t) => answer(&entry(t), Some(&props), username),
+                    match entry {
+                        Some(e) => answer(e, Some(&props), username),
                         None => xml::Response {
                             href,
                             found: Vec::new(),

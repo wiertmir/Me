@@ -3,13 +3,13 @@
 #![allow(clippy::result_large_err)] // the error type is the crate's own, as everywhere else
 
 use axum::http::StatusCode;
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use common::time::{When, parse_tz};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
+use common::time::{When, parse_tz, to_utc};
 use icalendar::parser::{Component, Property, read_components, unfold};
 
 use crate::{
     DavError,
-    backend::{Task, TaskWrite},
+    backend::{Event, EventWrite, Task, TaskWrite},
 };
 
 /// The service's limits for reminders: how many, and how long before.
@@ -34,6 +34,12 @@ fn prop<'a>(c: &'a Component, name: &str) -> Option<&'a Property<'a>> {
     c.properties
         .iter()
         .find(|p| p.name.as_str().eq_ignore_ascii_case(name))
+}
+
+/// Every property of that name, for those that may come more than once.
+fn props<'a>(c: &'a Component<'a>, name: &'a str) -> impl Iterator<Item = &'a Property<'a>> {
+    let named = move |p: &&Property| p.name.as_str().eq_ignore_ascii_case(name);
+    c.properties.iter().filter(named)
 }
 
 fn param<'a>(p: &'a Property, name: &str) -> Option<&'a str> {
@@ -89,7 +95,12 @@ fn components(unfolded: &str) -> Result<Vec<Component<'_>>, DavError> {
 /// A `DATE` or `DATE-TIME` property as the services take it: a date without a zone, or a wall-clock time
 /// with one (`UTC` for a value ending in `Z`). A time with neither `Z` nor a known `TZID` is refused.
 fn when(p: &Property) -> Result<(When, Option<String>), DavError> {
-    let (name, value) = (p.name.as_str(), p.val.as_str().trim());
+    when_of(p, p.val.as_str())
+}
+
+/// `when` for one `value` of a property that may hold several, such as `EXDATE`.
+fn when_of(p: &Property, value: &str) -> Result<(When, Option<String>), DavError> {
+    let (name, value) = (p.name.as_str(), value.trim());
     let malformed = |_| invalid(format!("{name} is not a date or a date-time"));
     let timed = |v| NaiveDateTime::parse_from_str(v, "%Y%m%dT%H%M%S").map(When::Timed);
     let date = param(p, "VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE"));
@@ -106,14 +117,10 @@ fn when(p: &Property) -> Result<(When, Option<String>), DavError> {
     }
 }
 
-/// The minutes of a duration that is zero or negative and in whole minutes, such as `-PT15M` or `-P1DT2H`.
-fn minutes_before(duration: &str) -> Option<u64> {
-    let (negative, rest) = match duration.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, duration.strip_prefix('+').unwrap_or(duration)),
-    };
+/// The seconds of a duration without its sign, such as `PT15M` or `P1DT2H`.
+fn seconds(duration: &str) -> Option<u64> {
     let (mut seconds, mut n) = (0u64, 0u64);
-    for c in rest.strip_prefix('P')?.chars() {
+    for c in duration.strip_prefix('P')?.chars() {
         let unit = match c {
             '0'..='9' => {
                 n = n.checked_mul(10)?.checked_add(c as u64 - '0' as u64)?;
@@ -130,7 +137,49 @@ fn minutes_before(duration: &str) -> Option<u64> {
         seconds = seconds.checked_add(n.checked_mul(unit)?)?;
         n = 0;
     }
-    (n == 0 && (negative || seconds == 0) && seconds % 60 == 0).then_some(seconds / 60)
+    (n == 0).then_some(seconds)
+}
+
+/// The minutes of a duration that is zero or negative and in whole minutes, such as `-PT15M` or `-P1DT2H`.
+fn minutes_before(duration: &str) -> Option<u64> {
+    let (negative, rest) = match duration.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, duration.strip_prefix('+').unwrap_or(duration)),
+    };
+    let seconds = seconds(rest)?;
+    ((negative || seconds == 0) && seconds % 60 == 0).then_some(seconds / 60)
+}
+
+/// One value of a date or time property in the form of the event's `DTSTART`: a date for an all-day event,
+/// otherwise the wall-clock time in the start's zone `tz`, whatever zone the value itself is written in.
+/// An event is stored with one zone, so its end, its cancelled occurrences and the occurrence an override
+/// replaces are all read this way.
+fn in_form_of_start(p: &Property, value: &str, tz: Option<&str>) -> Result<String, DavError> {
+    let zone = |name: &str| parse_tz(name).map_err(|_| invalid("unknown time zone"));
+    let converted = match (when_of(p, value)?, tz) {
+        ((date @ When::Date(_), _), None) => date,
+        ((When::Timed(t), Some(from)), Some(to)) if from == to => When::Timed(t),
+        ((When::Timed(t), Some(from)), Some(to)) => When::Timed(
+            to_utc(t, zone(&from)?)
+                .with_timezone(&zone(to)?)
+                .naive_local(),
+        ),
+        _ => {
+            let name = p.name.as_str();
+            return Err(invalid(format!("{name} is not in the form of DTSTART")));
+        }
+    };
+    Ok(converted.to_string())
+}
+
+/// The start with a positive `DURATION` added on the wall clock; whole days for a date.
+fn after(start: When, duration: &str) -> Option<When> {
+    let length = seconds(duration.strip_prefix('+').unwrap_or(duration))?;
+    let length = Duration::try_seconds(i64::try_from(length).ok()?)?;
+    Some(match start {
+        When::Date(d) => When::Date(d.checked_add_signed(length)?),
+        When::Timed(t) => When::Timed(t.checked_add_signed(length)?),
+    })
 }
 
 /// The reminders in a component's alarms: those with a `TRIGGER` relative to the start (or, for a to-do,
@@ -278,6 +327,139 @@ pub fn ical_to_todo(body: &str) -> Result<TodoIn, DavError> {
         uid,
         write,
         related_to: related_to.map(|p| p.val.as_str().to_owned()),
+    })
+}
+
+// ---- events ----
+
+/// An item a client sent: everything under one uid.
+pub struct ItemIn {
+    pub uid: String,
+    /// The single event or the series.
+    pub main: EventWrite,
+    /// Its changed occurrences. Always empty so far: a body that has any is refused.
+    #[allow(dead_code)]
+    pub overrides: Vec<EventWrite>,
+}
+
+/// `parts[0]` is the single event or the series; its overrides follow.
+pub fn events_to_ical(parts: &[Event]) -> String {
+    // An override names its occurrence in the form of the series' start, whatever zone it has itself.
+    let series_tz = parts.first().and_then(|e| e.tz.as_deref());
+    let mut out = String::new();
+    for e in parts {
+        let tz = e.tz.as_deref();
+        out += "BEGIN:VEVENT\r\n";
+        out += &line("UID", None, &e.uid);
+        out += &utc("DTSTAMP", e.updated_at);
+        out += &utc("LAST-MODIFIED", e.updated_at);
+        if let Some(original) = &e.original_start {
+            out += &when_line("RECURRENCE-ID", original, series_tz);
+        }
+        out += &line("SUMMARY", None, &e.summary);
+        if !e.description.is_empty() {
+            out += &line("DESCRIPTION", None, &e.description);
+        }
+        if !e.location.is_empty() {
+            out += &line("LOCATION", None, &e.location);
+        }
+        out += &when_line("DTSTART", &e.start, tz);
+        out += &when_line("DTEND", &e.end, tz);
+        if let Some(rule) = &e.rrule {
+            out += &line("RRULE", None, rule);
+        }
+        for cancelled in &e.exdates {
+            out += &when_line("EXDATE", cancelled, tz);
+        }
+        for minutes in &e.reminders {
+            out += &alarm(*minutes, false);
+        }
+        out += "END:VEVENT\r\n";
+    }
+    calendar(&out)
+}
+
+/// The highest revision among the parts and their number: every write takes a new, higher revision and a
+/// removed part changes the number, so this changes whenever a part is added, changed or removed.
+pub fn item_etag(parts: &[Event]) -> String {
+    // A part's etag is its quoted revision.
+    let revision = |e: &Event| e.etag.trim_matches('"').parse::<i64>().unwrap_or(0);
+    let highest = parts.iter().map(revision).max().unwrap_or(0);
+    format!("\"{highest}-{}\"", parts.len())
+}
+
+pub fn ical_to_events(body: &str) -> Result<ItemIn, DavError> {
+    let text_of_body = unfolded(body);
+    let parts = components(&text_of_body)?;
+    if parts.is_empty() || !parts.iter().all(|c| is(c, "VEVENT")) {
+        return Err(unsupported(
+            "a calendar takes the VEVENTs of one event per item",
+        ));
+    }
+    let event = match &parts[..] {
+        [one] if prop(one, "RECURRENCE-ID").is_none() => one,
+        _ => {
+            return Err(invalid(
+                "changed occurrences of a series are not supported yet",
+            ));
+        }
+    };
+    let uid = text(event, "UID");
+    if uid.is_empty() {
+        return Err(invalid("the VEVENT has no UID"));
+    }
+    Ok(ItemIn {
+        main: event_write(event, &uid)?,
+        overrides: Vec::new(),
+        uid,
+    })
+}
+
+/// One `VEVENT` as the service takes it.
+fn event_write(c: &Component, uid: &str) -> Result<EventWrite, DavError> {
+    // Dropping any of these would change when the event happens.
+    if props(c, "RDATE").next().is_some() || props(c, "EXRULE").next().is_some() {
+        return Err(invalid("RDATE and EXRULE are not supported"));
+    }
+    if props(c, "RRULE").count() > 1 {
+        return Err(invalid("more than one RRULE is not supported"));
+    }
+    let dtstart = prop(c, "DTSTART").ok_or_else(|| invalid("the VEVENT has no DTSTART"))?;
+    let (start, tz) = when(dtstart)?;
+    let tz_of_start = tz.as_deref();
+    let end = if let Some(dtend) = prop(c, "DTEND") {
+        in_form_of_start(dtend, dtend.val.as_str(), tz_of_start)?
+    } else {
+        // Without either an all-day event lasts its day; a timed one has no length, which the service
+        // refuses.
+        let end = match (prop(c, "DURATION"), start) {
+            (Some(d), _) => after(start, d.val.as_str().trim()),
+            (None, When::Date(_)) => after(start, "P1D"),
+            (None, When::Timed(_)) => Some(start),
+        };
+        end.ok_or_else(|| invalid("DURATION is not a length of time"))?
+            .to_string()
+    };
+    let mut exdates = Vec::new();
+    for p in props(c, "EXDATE") {
+        for value in p.val.as_str().split(',') {
+            exdates.push(in_form_of_start(p, value, tz_of_start)?);
+        }
+    }
+    Ok(EventWrite {
+        uid: Some(uid.to_owned()),
+        summary: text(c, "SUMMARY"),
+        description: text(c, "DESCRIPTION"),
+        location: text(c, "LOCATION"),
+        all_day: matches!(start, When::Date(_)),
+        start: start.to_string(),
+        end,
+        tz,
+        rrule: prop(c, "RRULE").map(|p| p.val.as_str().trim().to_owned()),
+        exdates,
+        reminders: reminders(c, false),
+        recurring_event_id: None,
+        original_start: None,
     })
 }
 
