@@ -163,23 +163,20 @@ pub(crate) fn atomically<T>(
 
 // ---- validation ----
 
+/// The instant at which a due has passed: its own instant for a time, 00:00 UTC of the next day for a date.
+pub(crate) fn passed(w: When, zone: Tz) -> DateTime<Utc> {
+    match w {
+        When::Date(d) => d.and_time(Default::default()).and_utc() + Duration::days(1),
+        When::Timed(_) => w.instant(zone),
+    }
+}
+
 /// `due` and `tz` as stored → (When, zone used to read it, the instant at which it has passed).
 pub(crate) fn due_parts(due: &str, tz: Option<&str>) -> ApiResult<(When, Tz, DateTime<Utc>)> {
-    match tz {
-        Some(z) => {
-            let zone = parse_tz(z)?;
-            let w = parse_when(due, false)?;
-            Ok((w, zone, w.instant(zone)))
-        }
-        None => {
-            let w = parse_when(due, true)?;
-            let When::Date(d) = w else {
-                unreachable!("parsed as a date")
-            };
-            let over = d.and_time(Default::default()).and_utc() + Duration::days(1);
-            Ok((w, chrono_tz::UTC, over))
-        }
-    }
+    let zone = tz.map(parse_tz).transpose()?;
+    let w = parse_when(due, zone.is_none())?;
+    let zone = zone.unwrap_or(chrono_tz::UTC);
+    Ok((w, zone, passed(w, zone)))
 }
 
 /// Checks that need no stored state; returns `due_utc`.

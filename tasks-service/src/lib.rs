@@ -2,6 +2,7 @@ pub mod config;
 pub mod db;
 pub mod lists;
 pub mod openapi;
+pub mod recurrence;
 pub mod tasks;
 pub mod user;
 
