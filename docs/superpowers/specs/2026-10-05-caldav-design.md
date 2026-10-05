@@ -196,8 +196,9 @@ This is not atomic. When a call fails, the bridge stops and answers with that
 error; what was written stays, and the client, which did not get a new etag,
 sends the item again.
 
-**Etag of an item:** a hash of the ids and etags of the stored events it is
-made of, so it changes when any of them does.
+**Etag of an item:** the highest revision among the stored events it is made
+of, and their number. Every write takes a new, higher revision and a removed
+part changes the number, so it changes when any of them does.
 
 **Deleting an item** deletes the single event or the series (the service
 deletes its overrides).
