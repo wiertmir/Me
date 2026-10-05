@@ -41,6 +41,28 @@
 		}
 	}
 
+	# tasks-service's API description and its documentation page, published so that they can be
+	# read from other machines while the project is in development. Neither asks for a sign-in; they
+	# show the shape of the API, no data. Remove these two blocks to keep them internal. Listed
+	# before the /tasks/* rule, which would otherwise send them to the service as they are.
+	handle /tasks/openapi.json {
+		rewrite * /api/openapi.json
+		reverse_proxy 127.0.0.1:8084
+	}
+	handle /tasks/docs {
+		rewrite * /api/docs
+		reverse_proxy 127.0.0.1:8084
+	}
+
+	# tasks-service: the public API. The two headers are how internal callers identify themselves,
+	# so a client must not be able to send them.
+	handle /tasks/* {
+		reverse_proxy 127.0.0.1:8084 {
+			header_up -X-Service-Secret
+			header_up -X-User-Id
+		}
+	}
+
 	# The services' /api/* is the internal API (guarded only by the shared service secret) and its
 	# documentation page. It is never proxied; auth-web has no /api/ routes either, so answer here.
 	handle /api/* {

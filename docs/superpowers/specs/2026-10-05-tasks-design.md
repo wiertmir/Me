@@ -1,7 +1,7 @@
 # Me — Tasks service: design
 
 Date: 2026-10-05
-Status: approved, not yet implemented
+Status: implemented
 
 ## Context
 
