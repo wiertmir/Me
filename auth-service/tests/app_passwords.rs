@@ -395,26 +395,55 @@ async fn verify_requires_service_secret() {
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Like `verify`, but as a device at `ip`.
+async fn verify_from(app: &TestApp, ip: &str, username: &str, password: &str) -> StatusCode {
+    app.http
+        .post(format!("{}/api/app-passwords/verify", app.base))
+        .header("X-Service-Secret", support::SERVICE_SECRET)
+        .header("X-Forwarded-For", ip)
+        .json(&json!({"username": username, "password": password}))
+        .send()
+        .await
+        .unwrap()
+        .status()
+}
+
+/// Wrong passwords from `ip` until it is locked.
+async fn lock_address(app: &TestApp, ip: &str) {
+    for _ in 0..20 {
+        assert_eq!(
+            verify_from(app, ip, "alice", "aaaa-bbbb-cccc-dddd").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        verify_from(app, ip, "alice", "aaaa-bbbb-cccc-dddd").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
 #[tokio::test]
-async fn repeated_wrong_passwords_are_rate_limited() {
+async fn wrong_passwords_lock_the_address() {
     let app = TestApp::spawn().await;
     let (_, tok) = user(&app, "alice").await;
     let (_, pw) = create(&app, &tok, "Phone").await;
-    for _ in 0..5 {
-        assert_invalid(&verify(&app, "alice", "aaaa-bbbb-cccc-dddd").await);
-    }
-    let r = app
-        .http
-        .post(format!("{}/api/app-passwords/verify", app.base))
-        .header("X-Service-Secret", support::SERVICE_SECRET)
-        .json(&json!({"username": "alice", "password": pw}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert!(r.headers().contains_key("retry-after"));
-    let b: Value = r.json().await.unwrap();
-    assert_eq!(b["code"], "rate_limited");
+    lock_address(&app, "10.0.0.1").await;
+    assert_eq!(
+        verify_from(&app, "10.0.0.1", "alice", &pw).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn wrong_passwords_do_not_lock_the_username() {
+    let app = TestApp::spawn().await;
+    let (_, tok) = user(&app, "alice").await;
+    let (_, pw) = create(&app, &tok, "Phone").await;
+    lock_address(&app, "10.0.0.1").await;
+    assert_eq!(
+        verify_from(&app, "10.0.0.2", "alice", &pw).await,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
