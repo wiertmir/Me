@@ -251,6 +251,29 @@ pub struct EventWrite {
     pub original_start: Option<String>,
 }
 
+/// A stored event as it would be sent to write it again, to tell whether a body changes it. An override
+/// is without its uid, which is its series'.
+impl From<&Event> for EventWrite {
+    fn from(e: &Event) -> Self {
+        let e = e.clone();
+        EventWrite {
+            uid: e.recurring_event_id.is_none().then_some(e.uid),
+            summary: e.summary,
+            description: e.description,
+            location: e.location,
+            all_day: e.all_day,
+            start: e.start,
+            end: e.end,
+            tz: e.tz,
+            rrule: e.rrule,
+            exdates: e.exdates,
+            reminders: e.reminders,
+            recurring_event_id: e.recurring_event_id,
+            original_start: e.original_start,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct EventChanges {
     sync_token: i64,

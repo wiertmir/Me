@@ -9,6 +9,7 @@ use axum::{
     routing::post,
 };
 use caldav_bridge::{Config, app, build_state};
+use icalendar::parser::{Component, read_calendar, unfold};
 use roxmltree::{Document, Node};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -196,4 +197,91 @@ pub fn responses<'a>(doc: &'a Document) -> Vec<(String, Node<'a, 'a>)> {
         .filter(|n| n.tag_name().name() == "response" && n.tag_name().namespace() == Some(DAV))
         .map(|r| (text(r, DAV, "href"), r))
         .collect()
+}
+
+// ---- events ----
+
+/// The path of alice's calendar, without a trailing slash.
+pub async fn calendar(s: &Stack) -> String {
+    let (_, calendars) = s
+        .rest(Method::GET, "/calendar/v1/calendars", ALICE, None)
+        .await;
+    format!(
+        "/dav/calendars/alice/c-{}",
+        calendars[0]["id"].as_str().unwrap()
+    )
+}
+
+pub async fn get(s: &Stack, cal: &str, uid: &str) -> (StatusCode, HeaderMap, String) {
+    s.dav("GET", &format!("{cal}/{uid}.ics"), "alice", &[], "")
+        .await
+}
+
+pub async fn etag(s: &Stack, cal: &str, uid: &str) -> String {
+    let (st, h, _) = get(s, cal, uid).await;
+    assert_eq!(st, StatusCode::OK);
+    h["etag"].to_str().unwrap().to_owned()
+}
+
+/// The events calendar-service has under that uid: the single one or the series first.
+pub async fn stored(s: &Stack, cal: &str, uid: &str) -> Vec<Value> {
+    let id = cal.rsplit("/c-").next().unwrap();
+    let (st, found) = s
+        .rest(
+            Method::GET,
+            &format!("/calendar/v1/calendars/{id}/by-uid?uid={uid}"),
+            ALICE,
+            None,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    found.as_array().unwrap().clone()
+}
+
+/// The lines of one `VEVENT` of an answer as (name, parameters, value), and the `TRIGGER`s of its alarms.
+pub struct Event {
+    pub props: Vec<(String, String, String)>,
+    pub alarms: Vec<String>,
+}
+
+impl Event {
+    fn of(c: &Component) -> Self {
+        assert_eq!(c.name, "VEVENT");
+        let props = c.properties.iter().map(|p| {
+            let params = p.params.iter().map(|q| {
+                let val = q.val.as_ref().map(|v| v.to_string());
+                format!("{}={}", q.key, val.unwrap_or_default())
+            });
+            let params: Vec<_> = params.collect();
+            (p.name.to_string(), params.join(";"), p.val.to_string())
+        });
+        let alarms = c.components.iter().map(|a| {
+            assert_eq!(a.name, "VALARM");
+            assert_eq!(a.find_prop("ACTION").unwrap().val, "DISPLAY");
+            a.find_prop("TRIGGER").unwrap().val.to_string()
+        });
+        Self {
+            props: props.collect(),
+            alarms: alarms.collect(),
+        }
+    }
+
+    /// Every `VEVENT` of a body.
+    pub fn all(body: &str) -> Vec<Self> {
+        let unfolded = unfold(body);
+        let cal = read_calendar(&unfolded).unwrap();
+        cal.components.iter().map(Self::of).collect()
+    }
+
+    /// The parameters and value of each line of that name.
+    pub fn lines(&self, name: &str) -> Vec<(&str, &str)> {
+        let named = self.props.iter().filter(|p| p.0 == name);
+        named.map(|p| (p.1.as_str(), p.2.as_str())).collect()
+    }
+
+    pub fn val(&self, name: &str) -> Option<&str> {
+        let all = self.lines(name);
+        assert!(all.len() <= 1, "{name} more than once");
+        all.first().map(|l| l.1)
+    }
 }

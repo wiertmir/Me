@@ -1,27 +1,17 @@
 mod support;
 
-use axum::http::{HeaderMap, Method, StatusCode};
-use icalendar::parser::{Component, read_calendar, unfold};
+use axum::http::{Method, StatusCode};
 use roxmltree::Document;
 use serde_json::{Value, json};
-use support::{ALICE, CALDAV, DAV, Stack, named, responses, text};
+use support::{
+    ALICE, CALDAV, DAV, Event, Stack, calendar, etag, get, named, responses, stored, text,
+};
 
 const ITEM_PROPS: &str = r#"<D:propfind xmlns:D="DAV:" xmlns:CS="http://calendarserver.org/ns/">
   <D:prop><D:getetag/><D:getcontenttype/><D:resourcetype/><CS:getctag/></D:prop></D:propfind>"#;
 
 const WARSAW_9_TO_10: &str = "DTSTART;TZID=Europe/Warsaw:20261005T090000\r\n\
                               DTEND;TZID=Europe/Warsaw:20261005T100000";
-
-/// The path of alice's calendar, without a trailing slash.
-async fn calendar(s: &Stack) -> String {
-    let (_, calendars) = s
-        .rest(Method::GET, "/calendar/v1/calendars", ALICE, None)
-        .await;
-    format!(
-        "/dav/calendars/alice/c-{}",
-        calendars[0]["id"].as_str().unwrap()
-    )
-}
 
 fn vevent(uid: &str, lines: &str) -> String {
     format!(
@@ -38,80 +28,6 @@ async fn put(s: &Stack, cal: &str, uid: &str, lines: &str, headers: &[(&str, &st
     // What is stored is not the body as sent, so the answer names no etag for it.
     assert!(!h.contains_key("etag"));
     status
-}
-
-async fn get(s: &Stack, cal: &str, uid: &str) -> (StatusCode, HeaderMap, String) {
-    s.dav("GET", &format!("{cal}/{uid}.ics"), "alice", &[], "")
-        .await
-}
-
-async fn etag(s: &Stack, cal: &str, uid: &str) -> String {
-    let (st, h, _) = get(s, cal, uid).await;
-    assert_eq!(st, StatusCode::OK);
-    h["etag"].to_str().unwrap().to_owned()
-}
-
-/// The events calendar-service has under that uid: the single one or the series first.
-async fn stored(s: &Stack, cal: &str, uid: &str) -> Vec<Value> {
-    let id = cal.rsplit("/c-").next().unwrap();
-    let (st, found) = s
-        .rest(
-            Method::GET,
-            &format!("/calendar/v1/calendars/{id}/by-uid?uid={uid}"),
-            ALICE,
-            None,
-        )
-        .await;
-    assert_eq!(st, StatusCode::OK);
-    found.as_array().unwrap().clone()
-}
-
-/// The lines of one `VEVENT` of an answer as (name, parameters, value), and the `TRIGGER`s of its alarms.
-struct Event {
-    props: Vec<(String, String, String)>,
-    alarms: Vec<String>,
-}
-
-impl Event {
-    fn of(c: &Component) -> Self {
-        assert_eq!(c.name, "VEVENT");
-        let props = c.properties.iter().map(|p| {
-            let params = p.params.iter().map(|q| {
-                let val = q.val.as_ref().map(|v| v.to_string());
-                format!("{}={}", q.key, val.unwrap_or_default())
-            });
-            let params: Vec<_> = params.collect();
-            (p.name.to_string(), params.join(";"), p.val.to_string())
-        });
-        let alarms = c.components.iter().map(|a| {
-            assert_eq!(a.name, "VALARM");
-            assert_eq!(a.find_prop("ACTION").unwrap().val, "DISPLAY");
-            a.find_prop("TRIGGER").unwrap().val.to_string()
-        });
-        Self {
-            props: props.collect(),
-            alarms: alarms.collect(),
-        }
-    }
-
-    /// Every `VEVENT` of a body.
-    fn all(body: &str) -> Vec<Self> {
-        let unfolded = unfold(body);
-        let cal = read_calendar(&unfolded).unwrap();
-        cal.components.iter().map(Self::of).collect()
-    }
-
-    /// The parameters and value of each line of that name.
-    fn lines(&self, name: &str) -> Vec<(&str, &str)> {
-        let named = self.props.iter().filter(|p| p.0 == name);
-        named.map(|p| (p.1.as_str(), p.2.as_str())).collect()
-    }
-
-    fn val(&self, name: &str) -> Option<&str> {
-        let all = self.lines(name);
-        assert!(all.len() <= 1, "{name} more than once");
-        all.first().map(|l| l.1)
-    }
 }
 
 /// The one `VEVENT` of the item.
@@ -376,58 +292,6 @@ async fn series_without_exceptions() {
     assert_eq!(e.lines("EXDATE"), [("VALUE=DATE", "20261006")]);
 }
 
-/// A changed occurrence made elsewhere is part of the item: it is sent, and it changes the etag.
-#[tokio::test]
-async fn override_made_elsewhere_is_part_of_the_item() {
-    let s = Stack::spawn().await;
-    let c = calendar(&s).await;
-    let body = format!("{WARSAW_9_TO_10}\r\nRRULE:FREQ=WEEKLY;COUNT=4");
-    assert_eq!(put(&s, &c, "e1", &body, &[]).await, StatusCode::CREATED);
-    let before = etag(&s, &c, "e1").await;
-    let series = stored(&s, &c, "e1").await[0]["id"].clone();
-    let id = c.rsplit("/c-").next().unwrap();
-    let moved = json!({"summary": "moved", "all_day": false, "start": "2026-10-12T11:00:00",
-        "end": "2026-10-12T12:00:00", "tz": "Europe/Warsaw", "recurring_event_id": series,
-        "original_start": "2026-10-12T09:00:00"});
-    let (st, _) = s
-        .rest(
-            Method::POST,
-            &format!("/calendar/v1/calendars/{id}/events"),
-            ALICE,
-            Some(moved),
-        )
-        .await;
-    assert_eq!(st, StatusCode::CREATED);
-
-    let (_, h, ics) = get(&s, &c, "e1").await;
-    assert_ne!(h["etag"], before.as_str());
-    let all = Event::all(&ics);
-    assert_eq!(all.len(), 2);
-    assert_eq!(all[0].val("RRULE"), Some("FREQ=WEEKLY;COUNT=4"));
-    assert_eq!(all[0].val("RECURRENCE-ID"), None);
-    assert_eq!(
-        all[1].lines("RECURRENCE-ID"),
-        [("TZID=Europe/Warsaw", "20261012T090000")]
-    );
-    assert_eq!(all[1].val("UID"), Some("e1"));
-    assert_eq!(all[1].val("SUMMARY"), Some("moved"));
-
-    // One item in the listing, with the same etag.
-    let (_, _, xml) = s
-        .dav(
-            "PROPFIND",
-            &format!("{c}/"),
-            "alice",
-            &[("depth", "1")],
-            ITEM_PROPS,
-        )
-        .await;
-    let doc = Document::parse(&xml).unwrap();
-    let r = responses(&doc);
-    assert_eq!(r.len(), 2);
-    assert_eq!(text(r[1].1, DAV, "getetag"), h["etag"].to_str().unwrap());
-}
-
 #[tokio::test]
 async fn listing_and_reports() {
     let s = Stack::spawn().await;
@@ -583,7 +447,7 @@ async fn refusals() {
         "DTSTART;TZID=Europe/Warsaw:20261005T090000\r\nDURATION:P1M".to_owned(),
         "DTSTART;TZID=Europe/Warsaw:20261005T090000\r\nDURATION:PT1D".to_owned(),
         "SUMMARY:no start".to_owned(),
-        // Changed occurrences come with the next task.
+        // A changed occurrence without its series.
         format!("{WARSAW_9_TO_10}\r\nRECURRENCE-ID;TZID=Europe/Warsaw:20261005T090000"),
     ] {
         let (st, _, body) = s

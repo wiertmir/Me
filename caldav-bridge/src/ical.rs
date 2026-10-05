@@ -361,8 +361,7 @@ pub struct ItemIn {
     pub uid: String,
     /// The single event or the series.
     pub main: EventWrite,
-    /// Its changed occurrences. Always empty so far: a body that has any is refused.
-    #[allow(dead_code)]
+    /// Its changed occurrences, each with the `original_start` it replaces and without the series' id.
     pub overrides: Vec<EventWrite>,
 }
 
@@ -420,22 +419,52 @@ pub fn ical_to_events(body: &str) -> Result<ItemIn, DavError> {
             "a calendar takes the VEVENTs of one event per item",
         ));
     }
-    let event = match &parts[..] {
-        [one] if prop(one, "RECURRENCE-ID").is_none() => one,
-        _ => {
-            return Err(invalid(
-                "changed occurrences of a series are not supported yet",
-            ));
-        }
+    let plain: Vec<_> = parts
+        .iter()
+        .filter(|c| prop(c, "RECURRENCE-ID").is_none())
+        .collect();
+    let [series] = plain[..] else {
+        return Err(invalid(
+            "an item is one event, or one series with its changed occurrences",
+        ));
     };
-    let uid = text(event, "UID");
+    let uid = text(series, "UID");
     if uid.is_empty() {
         return Err(invalid("the VEVENT has no UID"));
     }
+    let main = event_write(series, &uid)?;
+    let mut overrides: Vec<EventWrite> = Vec::new();
+    for c in &parts {
+        let Some(id) = prop(c, "RECURRENCE-ID") else {
+            continue;
+        };
+        if text(c, "UID") != uid {
+            return Err(invalid("the VEVENTs of an item have one UID"));
+        }
+        // `THISANDFUTURE` changes every later occurrence, which one stored override cannot say.
+        if param(id, "RANGE").is_some() {
+            return Err(invalid("RANGE in a RECURRENCE-ID is not supported"));
+        }
+        let mut changed = event_write(c, &uid)?;
+        if changed.rrule.is_some() || !changed.exdates.is_empty() {
+            return Err(invalid("a changed occurrence has neither RRULE nor EXDATE"));
+        }
+        let original = in_form_of_start(id, id.val.as_str(), main.tz.as_deref())?;
+        if overrides
+            .iter()
+            .any(|o| o.original_start.as_ref() == Some(&original))
+        {
+            return Err(invalid("an occurrence is changed more than once"));
+        }
+        // An override takes its series' uid.
+        changed.uid = None;
+        changed.original_start = Some(original);
+        overrides.push(changed);
+    }
     Ok(ItemIn {
-        main: event_write(event, &uid)?,
-        overrides: Vec::new(),
         uid,
+        main,
+        overrides,
     })
 }
 

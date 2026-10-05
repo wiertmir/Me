@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     AppState, DavError,
     auth::Signed,
-    backend::{Backend, Collection, Event, Task},
+    backend::{Backend, Collection, Event, EventWrite, Task},
     ical,
     path::{self, Kind, Target},
     xml::{self, Prop, ReportReq},
@@ -215,6 +215,9 @@ async fn get_event(b: &Backend<'_>, cal: Uuid, uid: &str) -> Result<Response, Da
     Ok((headers, ical::events_to_ical(&parts)).into_response())
 }
 
+/// Writes an item part by part: the single event or the series, then each changed occurrence, then the
+/// stored ones the body no longer has. A part the body does not change is not written, so it keeps its
+/// revision. Not atomic: the first call that fails ends the write with its error and what was written stays.
 async fn put_event(
     b: &Backend<'_>,
     cal: Uuid,
@@ -228,16 +231,44 @@ async fn put_event(
     if !stored.is_empty() && header_text(headers, header::IF_NONE_MATCH) == Some("*") {
         return Err(DavError::new(StatusCode::PRECONDITION_FAILED, ""));
     }
-    let status = match stored.first() {
+    let (series, status) = match stored.first() {
         Some(old) => {
-            b.replace_event(old.id, &item.main).await?;
-            StatusCode::NO_CONTENT
+            if EventWrite::from(old) != item.main {
+                b.replace_event(old.id, &item.main).await?;
+            }
+            (old.id, StatusCode::NO_CONTENT)
         }
-        None => {
-            b.create_event(cal, &item.main).await?;
-            StatusCode::CREATED
-        }
+        None => (
+            b.create_event(cal, &item.main).await?.id,
+            StatusCode::CREATED,
+        ),
     };
+    let old_overrides = stored.get(1..).unwrap_or_default();
+    for new in item.overrides.iter().cloned() {
+        // The service takes an override's occurrence only together with its series.
+        let new = EventWrite {
+            recurring_event_id: Some(series),
+            ..new
+        };
+        let old = old_overrides
+            .iter()
+            .find(|old| old.original_start == new.original_start);
+        match old {
+            Some(old) if EventWrite::from(old) == new => {}
+            Some(old) => {
+                b.replace_event(old.id, &new).await?;
+            }
+            None => {
+                b.create_event(cal, &new).await?;
+            }
+        }
+    }
+    for old in old_overrides {
+        let kept = |new: &EventWrite| new.original_start == old.original_start;
+        if !item.overrides.iter().any(kept) {
+            b.delete_event(old.id).await?;
+        }
+    }
     // No `ETag`: what is stored is not the body as sent, so the client reads the item back.
     Ok(status.into_response())
 }
