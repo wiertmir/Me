@@ -1,5 +1,6 @@
 pub mod config;
 pub mod db;
+pub mod lists;
 pub mod openapi;
 pub mod user;
 
@@ -7,7 +8,7 @@ use std::sync::Arc;
 
 use axum::{Json, Router, extract::FromRef, http::StatusCode, middleware, response::IntoResponse};
 use chrono::{DateTime, Utc};
-use common::{ApiError, ErrorBody, ServiceSecret, TokenVerifier};
+use common::{ApiError, ServiceSecret, TokenVerifier};
 use serde::Serialize;
 use user::User;
 use utoipa::{OpenApi as _, ToSchema};
@@ -85,22 +86,6 @@ async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
 }
 
-/// List the user's task lists
-#[utoipa::path(
-    get, path = "/tasks/v1/lists",
-    tag = "lists",
-    params(("X-User-Id" = Option<Uuid>, Header, description = "The user to act for; required with `X-Service-Secret`")),
-    security(("service_secret" = []), ("access_token" = [])),
-    responses(
-    (status = 200, description = "the lists", body = Vec<String>),
-    (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
-    (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
-)
-)]
-async fn list_lists(_: User) -> Json<Vec<String>> {
-    Json(vec![])
-}
-
 async fn not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such route")
 }
@@ -116,7 +101,7 @@ async fn method_not_allowed() -> impl IntoResponse {
 pub fn app(state: AppState) -> Router {
     let (router, api) = OpenApiRouter::with_openapi(openapi::ApiDoc::openapi())
         .routes(routes!(health))
-        .routes(routes!(list_lists))
+        .merge(lists::router())
         .split_for_parts();
     router
         .method_not_allowed_fallback(method_not_allowed)

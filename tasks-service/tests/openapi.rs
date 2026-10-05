@@ -5,7 +5,14 @@ use serde_json::Value;
 use support::TestApp;
 
 /// Every (method, path) the service serves, except `/api/openapi.json` and `/api/docs`.
-const ROUTES: &[(&str, &str)] = &[("get", "/health"), ("get", "/tasks/v1/lists")];
+const ROUTES: &[(&str, &str)] = &[
+    ("get", "/health"),
+    ("get", "/tasks/v1/lists"),
+    ("post", "/tasks/v1/lists"),
+    ("get", "/tasks/v1/lists/{id}"),
+    ("patch", "/tasks/v1/lists/{id}"),
+    ("delete", "/tasks/v1/lists/{id}"),
+];
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 
