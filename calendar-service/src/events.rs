@@ -11,10 +11,9 @@ use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
-use crate::{
-    AppState, Caller, calendars, recur,
-    time::{parse_tz, parse_when},
-};
+use common::time::{parse_tz, parse_when};
+
+use crate::{AppState, Caller, calendars};
 
 pub(crate) const COLUMNS: &str = "id, calendar_id, uid, summary, description, location, all_day, start, \"end\", tz, \
     rrule, exdates, reminders, recurring_event_id, original_start, revision, created_at, updated_at";
@@ -231,7 +230,7 @@ fn check(inp: &EventInput) -> ApiResult<Checked> {
                 "a repeating event's end must be after its start on the wall clock too",
             ));
         }
-        recur::validate(r, start, zone)?;
+        common::recur::validate(r, start, zone)?;
     }
     match (&inp.recurring_event_id, &inp.original_start) {
         (None, None) => {}

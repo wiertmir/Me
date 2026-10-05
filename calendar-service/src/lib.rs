@@ -1,22 +1,20 @@
 pub mod calendars;
-pub mod caller;
 pub mod config;
 pub mod db;
 pub mod events;
 pub mod openapi;
 pub mod range;
 pub mod recur;
-pub mod time;
 
 use std::sync::Arc;
 
 use axum::{Json, Router, extract::FromRef, http::StatusCode, middleware, response::IntoResponse};
-use common::{ApiError, TokenVerifier};
+use common::{ApiError, ServiceSecret, TokenVerifier};
 use serde::Serialize;
 use utoipa::{OpenApi as _, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-pub use caller::Caller;
+pub use common::Caller;
 pub use common::EXAMPLE_SERVICE_SECRET;
 pub use config::Config;
 pub use db::Db;
@@ -31,6 +29,12 @@ pub struct AppState {
 impl FromRef<AppState> for Arc<TokenVerifier> {
     fn from_ref(s: &AppState) -> Self {
         s.verifier.clone()
+    }
+}
+
+impl FromRef<AppState> for ServiceSecret {
+    fn from_ref(s: &AppState) -> Self {
+        ServiceSecret(s.cfg.service_secret.as_str().into())
     }
 }
 
