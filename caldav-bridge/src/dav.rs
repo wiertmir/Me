@@ -188,9 +188,10 @@ async fn put_todo(
 
 /// What is stored under a uid, the single event or the series first; empty when there is nothing. 412
 /// unless that satisfies `If-Match`.
-// ponytail: `If-Match` is compared here, against what was just looked up, and the service calls that follow
-// are sent without it, so two writers in the same instant can both pass; pass the series' etag through to
-// the service if that ever matters.
+// ponytail: `If-Match` is compared once, here, against what was just looked up. A write is then several
+// calls to the service, one per part, so another writer anywhere in between is not noticed, and a call that
+// fails midway leaves the parts before it written, with a new item etag. One endpoint in calendar-service
+// that writes a whole item atomically, under the item's etag, is the way out if that ever matters.
 async fn stored_event(
     b: &Backend<'_>,
     cal: Uuid,
@@ -266,7 +267,11 @@ async fn put_event(
     for old in old_overrides {
         let kept = |new: &EventWrite| new.original_start == old.original_start;
         if !item.overrides.iter().any(kept) {
-            b.delete_event(old.id).await?;
+            match b.delete_event(old.id).await {
+                // Deleted elsewhere in the meantime, which is what was wanted.
+                Err(e) if e.status() == StatusCode::NOT_FOUND => {}
+                other => other?,
+            }
         }
     }
     // No `ETag`: what is stored is not the body as sent, so the client reads the item back.

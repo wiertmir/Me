@@ -461,6 +461,15 @@ pub fn ical_to_events(body: &str) -> Result<ItemIn, DavError> {
         changed.original_start = Some(original);
         overrides.push(changed);
     }
+    // The service refuses these too, but only after the series has been written.
+    if !overrides.is_empty() && main.rrule.is_none() {
+        return Err(invalid("a changed occurrence needs a repeating event"));
+    }
+    if overrides.iter().any(|o| o.all_day != main.all_day) {
+        return Err(invalid(
+            "a changed occurrence must be all-day exactly when its series is",
+        ));
+    }
     Ok(ItemIn {
         uid,
         main,

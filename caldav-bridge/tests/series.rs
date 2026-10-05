@@ -312,21 +312,122 @@ async fn malformed_overrides_are_refused() {
     assert!(stored(&s, &c, "s1").await.is_empty());
 }
 
-/// What the service refuses for an override is refused: here one that is all-day in a timed series, and
-/// one for an event that does not repeat. The series, written first, stays.
+/// What the service would refuse only after the series is written, the bridge refuses before writing
+/// anything: an override of an event that does not repeat, and one that is all-day in a timed series or
+/// the reverse.
 #[tokio::test]
-async fn service_refusal_of_an_override_becomes_403() {
+async fn an_override_without_a_rule_is_refused_before_writing() {
     let s = Stack::spawn().await;
     let c = calendar(&s).await;
-    let all_day = "RECURRENCE-ID;TZID=Europe/Warsaw:20261012T090000\r\nDTSTART;VALUE=DATE:20261012";
-    refused(&s, &c, &[SERIES, all_day]).await;
-    assert_eq!(stored(&s, &c, "s1").await.len(), 1);
-
     let single = SERIES.replace("RRULE:FREQ=WEEKLY;COUNT=6\r\n", "");
+    let (st, answer) = put_as(&s, &c, &[&single, &moved(12, 11, "a")]).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert!(answer.contains("needs a repeating event"), "{answer}");
+    assert!(stored(&s, &c, "s1").await.is_empty());
+
+    let all_day = "RECURRENCE-ID;TZID=Europe/Warsaw:20261012T090000\r\nDTSTART;VALUE=DATE:20261012";
+    let (st, answer) = put_as(&s, &c, &[SERIES, all_day]).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert!(answer.contains("all-day exactly when"), "{answer}");
+    let series = "DTSTART;VALUE=DATE:20261005\r\nRRULE:FREQ=WEEKLY;COUNT=4";
+    let timed = moved(12, 11, "a").replace(
+        "RECURRENCE-ID;TZID=Europe/Warsaw:20261012T090000",
+        "RECURRENCE-ID;VALUE=DATE:20261012",
+    );
+    refused(&s, &c, &[series, &timed]).await;
+    assert!(stored(&s, &c, "s1").await.is_empty());
+
+    // A stored item stays as it is.
+    assert_eq!(put(&s, &c, &[SERIES]).await, StatusCode::CREATED);
+    let before = etag(&s, &c, "s1").await;
     refused(&s, &c, &[&single, &moved(12, 11, "a")]).await;
+    assert_eq!(etag(&s, &c, "s1").await, before);
+}
+
+/// A refusal only the service can make, here a summary that is too long, ends the write where it is: the
+/// parts before it stay. Sending the corrected item again writes the rest and nothing twice.
+#[tokio::test]
+async fn retry_after_a_partial_write_converges() {
+    let s = Stack::spawn().await;
+    let c = calendar(&s).await;
+    let first = moved(12, 11, "a");
+    let (st, answer) = put_as(&s, &c, &[SERIES, &first, &moved(19, 11, &"x".repeat(501))]).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert!(answer.contains("valid-calendar-data"), "{answer}");
+    assert!(answer.contains("at most 500 characters"), "{answer}");
+    let partial = stored(&s, &c, "s1").await;
+    assert_eq!(partial.len(), 2);
+
+    let st = put(&s, &c, &[SERIES, &first, &moved(19, 11, "b")]).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
     let parts = stored(&s, &c, "s1").await;
-    assert_eq!(parts.len(), 1);
-    assert_eq!(parts[0]["rrule"], Value::Null);
+    assert_eq!(parts.len(), 3);
+    for (now, before) in parts.iter().zip(&partial) {
+        assert_eq!(now["id"], before["id"]);
+        assert_eq!(now["etag"], before["etag"]);
+    }
+    assert_eq!(parts[1]["original_start"], "2026-10-12T09:00:00");
+    assert_eq!(parts[2]["original_start"], "2026-10-19T09:00:00");
+    assert_eq!(parts[2]["summary"], "b");
+}
+
+#[tokio::test]
+async fn if_match_on_a_multi_part_item() {
+    let s = Stack::spawn().await;
+    let c = calendar(&s).await;
+    put(&s, &c, &[SERIES, &moved(12, 11, "Later")]).await;
+    let before = etag(&s, &c, "s1").await;
+    let id = stored(&s, &c, "s1").await[1]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let changed = json!({"summary": "changed elsewhere", "all_day": false, "start": "2026-10-12T12:00:00",
+        "end": "2026-10-12T13:00:00", "tz": "Europe/Warsaw"});
+    let (st, _) = s
+        .rest(
+            Method::PUT,
+            &format!("/calendar/v1/events/{id}"),
+            ALICE,
+            Some(changed),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let path = format!("{c}/s1.ics");
+    let item = body(&[("s1", SERIES)]);
+    let (st, _, _) = s
+        .dav("PUT", &path, "alice", &[("if-match", &before)], &item)
+        .await;
+    assert_eq!(st, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(stored(&s, &c, "s1").await.len(), 2);
+    let fresh = etag(&s, &c, "s1").await;
+    assert_ne!(fresh, before);
+    let (st, _, _) = s
+        .dav("PUT", &path, "alice", &[("if-match", &fresh)], &item)
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    assert_eq!(stored(&s, &c, "s1").await.len(), 1);
+}
+
+#[tokio::test]
+async fn unchanged_all_day_series_is_not_rewritten() {
+    let s = Stack::spawn().await;
+    let c = calendar(&s).await;
+    let series = "DTSTART;VALUE=DATE:20261005\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\nSUMMARY:Weekly\r\n\
+                  BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:x\r\nTRIGGER:-PT10M\r\nEND:VALARM";
+    let changed = "RECURRENCE-ID;VALUE=DATE:20261012\r\nDTSTART;VALUE=DATE:20261013\r\nSUMMARY:x";
+    assert_eq!(put(&s, &c, &[series, changed]).await, StatusCode::CREATED);
+    let before = stored(&s, &c, "s1").await;
+    assert_eq!(before[0]["reminders"], json!([10]));
+    let tag = etag(&s, &c, "s1").await;
+
+    let (_, _, ics) = get(&s, &c, "s1").await;
+    let (st, _, _) = s
+        .dav("PUT", &format!("{c}/s1.ics"), "alice", &[], &ics)
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    assert_eq!(etag(&s, &c, "s1").await, tag);
+    assert_eq!(stored(&s, &c, "s1").await, before);
 }
 
 #[tokio::test]
