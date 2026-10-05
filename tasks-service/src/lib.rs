@@ -2,6 +2,7 @@ pub mod config;
 pub mod db;
 pub mod lists;
 pub mod openapi;
+pub mod tasks;
 pub mod user;
 
 use std::sync::Arc;
@@ -102,6 +103,7 @@ pub fn app(state: AppState) -> Router {
     let (router, api) = OpenApiRouter::with_openapi(openapi::ApiDoc::openapi())
         .routes(routes!(health))
         .merge(lists::router())
+        .merge(tasks::router())
         .split_for_parts();
     router
         .method_not_allowed_fallback(method_not_allowed)

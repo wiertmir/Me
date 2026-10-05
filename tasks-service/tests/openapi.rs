@@ -12,6 +12,10 @@ const ROUTES: &[(&str, &str)] = &[
     ("get", "/tasks/v1/lists/{id}"),
     ("patch", "/tasks/v1/lists/{id}"),
     ("delete", "/tasks/v1/lists/{id}"),
+    ("post", "/tasks/v1/lists/{id}/tasks"),
+    ("get", "/tasks/v1/tasks/{id}"),
+    ("put", "/tasks/v1/tasks/{id}"),
+    ("delete", "/tasks/v1/tasks/{id}"),
 ];
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
