@@ -2472,6 +2472,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "tasks-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "common",
+ "jsonwebtoken",
+ "p256",
+ "rand 0.10.3",
+ "reqwest",
+ "rrule",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "utoipa-axum",
+ "uuid",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
