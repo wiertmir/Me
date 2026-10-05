@@ -88,11 +88,21 @@ pub fn read_propfind(body: &str) -> Result<PropfindReq, DavError> {
     Ok(PropfindReq { props: Some(props) })
 }
 
+/// Escapes text for XML 1.0; characters the format forbids are dropped.
 pub fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\t' | '\n' | '\r' => out.push(c),
+            '\0'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => {}
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 pub struct Response {
@@ -147,4 +157,15 @@ pub fn multistatus(responses: &[Response]) -> String {
         out += "</D:response>";
     }
     out + "</D:multistatus>"
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn escape_drops_what_xml_forbids() {
+        assert_eq!(
+            super::escape("a\u{1}b\u{b}\u{fffe}<\t\n&"),
+            "ab&lt;\t\n&amp;"
+        );
+    }
 }

@@ -67,10 +67,10 @@ async fn propfind(
         None | Some("0") => 0,
         Some("1") => 1,
         Some("infinity") => {
-            return Err(
-                DavError::new(StatusCode::FORBIDDEN, "depth infinity is not supported")
-                    .precondition("propfind-finite-depth"),
-            );
+            return Err(DavError::new(
+                StatusCode::FORBIDDEN,
+                "depth infinity is not supported",
+            ));
         }
         Some(_) => return Err(DavError::new(StatusCode::BAD_REQUEST, "bad Depth")),
     };

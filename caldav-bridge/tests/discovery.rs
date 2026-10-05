@@ -212,3 +212,25 @@ async fn empty_propfind_body_lists_all_properties() {
         assert!(named(*cal, ns, name).is_some(), "{name}");
     }
 }
+
+#[tokio::test]
+async fn forbidden_characters_in_a_name_do_not_break_the_answer() {
+    let s = Stack::spawn().await;
+    let (st, _) = s
+        .rest(
+            Method::POST,
+            "/calendar/v1/calendars",
+            ALICE,
+            Some(json!({"name": "a\u{1}b"})),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED);
+    let (_, xml) = propfind(&s, "/dav/calendars/alice/", "1", COLLECTION_PROPS).await;
+    let doc = Document::parse(&xml).unwrap();
+    let names: Vec<_> = responses(&doc)
+        .iter()
+        .filter(|(h, _)| h.contains("/c-"))
+        .map(|(_, r)| text(*r, DAV, "displayname"))
+        .collect();
+    assert!(names.contains(&"ab".to_owned()), "{names:?}");
+}

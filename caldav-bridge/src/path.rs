@@ -41,6 +41,9 @@ fn collection(segment: &str) -> Option<(Kind, Uuid)> {
 /// nothing here, another user's name included.
 pub fn parse(path: &str, username: &str) -> Option<Target> {
     let rest = path.strip_prefix("/dav")?;
+    if !rest.is_empty() && !rest.starts_with('/') {
+        return None;
+    }
     let mut segments = Vec::new();
     for s in rest.split('/').filter(|s| !s.is_empty()) {
         segments.push(percent_decode_str(s).decode_utf8().ok()?.into_owned());
@@ -100,6 +103,7 @@ mod tests {
         ] {
             assert_eq!(parse(&href(&t, "al ice"), "al ice"), Some(t));
         }
+        assert_eq!(parse("/davprincipals/alice", "alice"), None);
         assert_eq!(parse("/dav/calendars/bob/", "alice"), None);
         assert_eq!(parse("/dav/calendars/alice/c-nope/", "alice"), None);
     }
