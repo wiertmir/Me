@@ -1,4 +1,4 @@
-# Build from the repository root: docker build -f tasks-service/Dockerfile -t me/tasks-service:dev .
+# Build from the repository root: docker build -f caldav-bridge/Dockerfile -t me/caldav-bridge:dev .
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -10,11 +10,11 @@ COPY caldav-bridge caldav-bridge
 # The cache mounts keep the crate registry and the build directory between builds.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p tasks-service && cp target/release/tasks-service /tasks-service
+    cargo build --release --locked -p caldav-bridge && cp target/release/caldav-bridge /caldav-bridge
 
 # glibc, CA certificates and time zones, nothing else (no shell).
 FROM gcr.io/distroless/cc-debian12
-COPY --from=build /tasks-service /usr/local/bin/tasks-service
+COPY --from=build /caldav-bridge /usr/local/bin/caldav-bridge
 USER 1000
-ENTRYPOINT ["tasks-service"]
-CMD ["/etc/me/tasks.toml"]
+ENTRYPOINT ["caldav-bridge"]
+CMD ["/etc/me/caldav.toml"]

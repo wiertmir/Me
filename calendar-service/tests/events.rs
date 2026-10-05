@@ -587,3 +587,86 @@ async fn series_ending_before_its_start_on_the_wall_clock_is_refused() {
     let (s, e) = post(&app, ALICE, &cal, body).await;
     assert_eq!(s, 201, "{e}");
 }
+
+async fn by_uid(app: &TestApp, user: uuid::Uuid, cal: &str, query: &str) -> (u16, Value) {
+    let (s, _, b) = app
+        .call(
+            Method::GET,
+            &format!("{CALS}/{cal}/by-uid{query}"),
+            user,
+            None,
+        )
+        .await;
+    (s.as_u16(), b)
+}
+
+#[tokio::test]
+async fn by_uid_returns_series_then_overrides() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    let series = with(timed(), json!({"uid": "s1", "rrule": "FREQ=WEEKLY"}));
+    let (_, series) = post(&app, ALICE, &cal, series).await;
+    for (day, start) in [("19", "2026-10-19"), ("12", "2026-10-12")] {
+        let ov = with(
+            timed(),
+            json!({"start": format!("2026-10-{day}T11:00:00"), "end": format!("2026-10-{day}T12:00:00"),
+                   "recurring_event_id": series["id"], "original_start": format!("{start}T09:00:00")}),
+        );
+        assert_eq!(post(&app, ALICE, &cal, ov).await.0, 201);
+    }
+    post(&app, ALICE, &cal, with(timed(), json!({"uid": "other"}))).await;
+    let (s, got) = by_uid(&app, ALICE, &cal, "?uid=s1").await;
+    assert_eq!(s, 200, "{got}");
+    let got = got.as_array().unwrap();
+    assert_eq!(got.len(), 3);
+    assert_eq!(got[0]["id"], series["id"]);
+    assert_eq!(got[1]["original_start"], "2026-10-12T09:00:00");
+    assert_eq!(got[2]["original_start"], "2026-10-19T09:00:00");
+}
+
+#[tokio::test]
+async fn by_uid_unknown_is_empty() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    assert_eq!(
+        by_uid(&app, ALICE, &cal, "?uid=nope").await,
+        (200, json!([]))
+    );
+}
+
+#[tokio::test]
+async fn by_uid_ignores_deleted() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    let (_, ev) = post(&app, ALICE, &cal, with(timed(), json!({"uid": "u"}))).await;
+    let (s, _, _) = app.call(Method::DELETE, &path(&ev), ALICE, None).await;
+    assert_eq!(s, 204);
+    assert_eq!(by_uid(&app, ALICE, &cal, "?uid=u").await, (200, json!([])));
+}
+
+#[tokio::test]
+async fn by_uid_other_users_calendar_is_404() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    let (s, e) = by_uid(&app, BOB, &cal, "?uid=u").await;
+    assert_eq!((s, &e["code"]), (404, &json!("not_found")));
+}
+
+#[tokio::test]
+async fn by_uid_without_uid_is_422() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    for q in ["", "?uid="] {
+        let (s, e) = by_uid(&app, ALICE, &cal, q).await;
+        assert_eq!((s, &e["code"]), (422, &json!("validation")), "{q}");
+    }
+}
+
+#[tokio::test]
+async fn by_uid_takes_a_percent_encoded_uid() {
+    let app = TestApp::spawn().await;
+    let cal = cal(&app, ALICE).await;
+    let (_, ev) = post(&app, ALICE, &cal, with(timed(), json!({"uid": "a/b c"}))).await;
+    let (s, got) = by_uid(&app, ALICE, &cal, "?uid=a%2Fb%20c").await;
+    assert_eq!((s, &got[0]["id"]), (200, &ev["id"]));
+}

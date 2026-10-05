@@ -164,7 +164,9 @@ fn invalid_credentials() -> ApiError {
 
 /// Verify an app password
 ///
-/// Checks a username and app password for the CalDAV bridge (service secret only). Every failure gives the same 401.
+/// Checks a username and app password for the CalDAV bridge (service secret only). Every failure gives the same 401. Failures are limited per client address only, so a stranger cannot lock a user out.
+///
+/// The caller must send the device's address in `X-Forwarded-For`; without it every device shares one limit.
 #[utoipa::path(
     post, path = "/api/app-passwords/verify",
     tag = "app-passwords",
@@ -184,18 +186,12 @@ async fn verify(
 ) -> Result<Json<VerifyResponse>, SigninError> {
     let (ip, _) = client_info(&headers);
     let login = users::normalize(&req.username);
-    // Bound the key so arbitrary input cannot grow the limiter map without limit.
-    let user_key = format!("app:{}", login.chars().take(254).collect::<String>());
     let ip_key = format!("ip:{ip}");
     let limited = |wait| {
         tracing::warn!(event = "app_password_verify", ip = %ip, outcome = "rate_limited");
         SigninError::Limited(wait)
     };
     s.limiter.begin(&ip_key).map_err(limited)?;
-    if let Err(wait) = s.limiter.begin(&user_key) {
-        s.limiter.undo(&ip_key);
-        return Err(limited(wait));
-    }
 
     // Always hash and compare, also for unknown users, so timing does not reveal which exist.
     // Oversized input cannot match anything; hash only a fixed-size stand-in for it.
@@ -227,7 +223,6 @@ async fn verify(
             user_id = found.as_ref().map(|u| u.id.to_string()), ip = %ip);
         return Err(invalid_credentials().into());
     };
-    s.limiter.clear(&user_key);
     s.limiter.undo(&ip_key);
     store::touch(&s.db, id)?;
     tracing::info!(event = "app_password_verify", outcome = "success", user_id = %user.id);

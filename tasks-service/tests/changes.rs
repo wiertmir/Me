@@ -162,3 +162,65 @@ async fn since_zero_includes_tombstones() {
     let (_, got) = changes(&app, &list, "").await;
     assert_eq!(ids(&got), [a["id"].as_str().unwrap()]);
 }
+
+async fn by_uid(app: &TestApp, user: uuid::Uuid, list: &str, query: &str) -> (u16, Value) {
+    let (s, _, b) = app
+        .call(
+            Method::GET,
+            &format!("{LISTS}/{list}/by-uid{query}"),
+            user,
+            None,
+        )
+        .await;
+    (s.as_u16(), b)
+}
+
+#[tokio::test]
+async fn by_uid_returns_the_task() {
+    let app = TestApp::spawn().await;
+    let list = list(&app).await;
+    let t = post(&app, &list).await;
+    post(&app, &list).await;
+    let q = format!("?uid={}", t["uid"].as_str().unwrap());
+    let (s, got) = by_uid(&app, ALICE, &list, &q).await;
+    assert_eq!((s, got.as_array().unwrap().len()), (200, 1));
+    assert_eq!(got[0]["id"], t["id"]);
+}
+
+#[tokio::test]
+async fn by_uid_unknown_is_empty() {
+    let app = TestApp::spawn().await;
+    let list = list(&app).await;
+    assert_eq!(
+        by_uid(&app, ALICE, &list, "?uid=nope").await,
+        (200, json!([]))
+    );
+}
+
+#[tokio::test]
+async fn by_uid_ignores_deleted() {
+    let app = TestApp::spawn().await;
+    let list = list(&app).await;
+    let t = post(&app, &list).await;
+    delete(&app, &t).await;
+    let q = format!("?uid={}", t["uid"].as_str().unwrap());
+    assert_eq!(by_uid(&app, ALICE, &list, &q).await, (200, json!([])));
+}
+
+#[tokio::test]
+async fn by_uid_other_users_list_is_404() {
+    let app = TestApp::spawn().await;
+    let list = list(&app).await;
+    let (s, e) = by_uid(&app, BOB, &list, "?uid=u").await;
+    assert_eq!((s, &e["code"]), (404, &json!("not_found")));
+}
+
+#[tokio::test]
+async fn by_uid_without_uid_is_422() {
+    let app = TestApp::spawn().await;
+    let list = list(&app).await;
+    for q in ["", "?uid="] {
+        let (s, e) = by_uid(&app, ALICE, &list, q).await;
+        assert_eq!((s, &e["code"]), (422, &json!("validation")), "{q}");
+    }
+}

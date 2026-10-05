@@ -29,6 +29,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(create_event))
         .routes(routes!(get_event, replace_event, delete_event))
         .routes(routes!(list_changes))
+        .routes(routes!(list_by_uid))
 }
 
 // ---- types ----
@@ -125,6 +126,11 @@ pub enum Change {
 #[derive(Deserialize)]
 struct ChangesQuery {
     since: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UidQuery {
+    uid: Option<String>,
 }
 
 // ---- errors ----
@@ -705,4 +711,63 @@ async fn list_changes(
     Ok(Json(
         s.db.with(|c| changes_since(c, user, calendar, since))??,
     ))
+}
+
+// ---- lookup by uid ----
+
+fn by_uid_of(
+    c: &Connection,
+    user: Uuid,
+    calendar: Uuid,
+    uid: &str,
+) -> rusqlite::Result<ApiResult<Vec<Event>>> {
+    if calendars::owned(c, user, calendar)?.is_none() {
+        return Ok(Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no such calendar",
+        )));
+    }
+    Ok(Ok(c
+        .prepare(&format!(
+            "SELECT {COLUMNS} FROM events WHERE calendar_id = ?1 AND uid = ?2 AND deleted = 0
+             ORDER BY recurring_event_id IS NOT NULL, original_start, id"
+        ))?
+        .query_map(params![calendar.to_string(), uid], from_row)?
+        .collect::<rusqlite::Result<_>>()?))
+}
+
+/// Find events by uid
+///
+/// The live events of the calendar with this `uid`: the series or single event first, then its overrides by
+/// `original_start`. An empty list when there are none.
+#[utoipa::path(
+    get, path = "/calendar/v1/calendars/{id}/by-uid",
+    tag = "events",
+    params(
+        ("id" = String, Path, description = "the calendar's UUID"),
+        ("uid" = String, Query, description = "the uid to look for; 1 or more characters, percent-encoded"),
+        ("X-User-Id" = Option<Uuid>, Header, description = "The user to act for; required with `X-Service-Secret`"),
+    ),
+    security(("service_secret" = []), ("access_token" = [])),
+    responses(
+        (status = 200, description = "the matching events, possibly none", body = Vec<Event>),
+        (status = 401, description = "`unauthorized`: no valid credentials", body = ErrorBody),
+        (status = 503, description = "`unavailable`: the keys to verify the access token cannot be fetched", body = ErrorBody),
+        (status = 404, description = "`not_found`: unknown id, not a UUID, or not the caller's", body = ErrorBody),
+        (status = 422, description = "`validation`: `uid` is missing or empty", body = ErrorBody),
+    )
+)]
+async fn list_by_uid(
+    State(s): State<AppState>,
+    Caller(user): Caller,
+    PathId(calendar): PathId,
+    query: Result<Query<UidQuery>, QueryRejection>,
+) -> ApiResult<Json<Vec<Event>>> {
+    let Query(q) = query.map_err(|_| invalid("the query string is malformed"))?;
+    let uid = q
+        .uid
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| invalid("uid is required"))?;
+    Ok(Json(s.db.with(|c| by_uid_of(c, user, calendar, &uid))??))
 }

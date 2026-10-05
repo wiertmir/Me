@@ -1,4 +1,4 @@
-# auth-service, calendar-service, tasks-service, auth-web and Caddy as one pod. The containers share a network namespace, so they
+# auth-service, calendar-service, tasks-service, caldav-bridge, auth-web and Caddy as one pod. The containers share a network namespace, so they
 # reach each other on loopback exactly as the plain processes do: the services stay on 127.0.0.1 and
 # auth-web keeps trusting the proxy's forwarded headers. Only Caddy's 80/443 leave the pod, plus the
 # Aspire dashboard (traces of the services), which the cluster publishes on this machine's loopback only.
@@ -6,7 +6,7 @@
 # Created by run-kubernetes.sh, which also supplies:
 #   secret me-env        the repository's .env (service secret, host name, auth-web settings) plus TZ
 #                        and OTLP_KEY, a key for the dashboard that is new on every run
-#   configmap me-config  auth-service/, calendar-service/ and tasks-service/config.local.toml and the Caddyfile
+#   configmap me-config  auth-service/, calendar-service/, tasks-service/ and caldav-bridge/config.local.toml and the Caddyfile
 #   /me/* on the node    the same data directories the plain processes use
 apiVersion: v1
 kind: Namespace
@@ -68,6 +68,19 @@ spec:
           volumeMounts:
             - {name: config, mountPath: /etc/me/tasks.toml, subPath: tasks.toml}
             - {name: auth-data, mountPath: /data}
+        - name: caldav-bridge
+          image: me/caldav-bridge:dev
+          args: ["/etc/me/caldav.toml"]
+          envFrom: [{secretRef: {name: me-env}}]
+          env:
+            # The bridge uses the three services' secrets from me-env.
+            - {name: ME_CALDAV__AUTH_SECRET, value: "$(ME_AUTH__SERVICE_SECRET)"}
+            - {name: ME_CALDAV__CALENDAR_SECRET, value: "$(ME_CALENDAR__SERVICE_SECRET)"}
+            - {name: ME_CALDAV__TASKS_SECRET, value: "$(ME_TASKS__SERVICE_SECRET)"}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://127.0.0.1:18889"}
+            - {name: OTEL_EXPORTER_OTLP_HEADERS, value: "x-otlp-api-key=$(OTLP_KEY)"}   # OTLP_KEY: from me-env
+          volumeMounts:
+            - {name: config, mountPath: /etc/me/caldav.toml, subPath: caldav.toml}
         - name: auth-web
           image: me/auth-web:dev
           envFrom: [{secretRef: {name: me-env}}]
