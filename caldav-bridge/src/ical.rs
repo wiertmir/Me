@@ -117,36 +117,46 @@ fn when_of(p: &Property, value: &str) -> Result<(When, Option<String>), DavError
     }
 }
 
-/// The seconds of a duration without its sign, such as `PT15M` or `P1DT2H`.
-fn seconds(duration: &str) -> Option<u64> {
-    let (mut seconds, mut n) = (0u64, 0u64);
-    for c in duration.strip_prefix('P')?.chars() {
-        let unit = match c {
-            '0'..='9' => {
-                n = n.checked_mul(10)?.checked_add(c as u64 - '0' as u64)?;
-                continue;
-            }
-            'T' => continue,
-            'W' => 604_800,
-            'D' => 86_400,
-            'H' => 3_600,
-            'M' => 60,
-            'S' => 1,
-            _ => return None,
-        };
-        seconds = seconds.checked_add(n.checked_mul(unit)?)?;
-        n = 0;
+/// The number before `unit` at the start of `rest`, taken off it; `None`, and `rest` as it was, without one.
+fn number(rest: &mut &str, unit: char) -> Option<u64> {
+    let digits = rest.find(|c: char| !c.is_ascii_digit())?;
+    let n = rest[..digits].parse().ok()?;
+    *rest = rest[digits..].strip_prefix(unit)?;
+    Some(n)
+}
+
+/// A duration without its sign, in the forms RFC 5545 has and no other: `PnW`, or `P[nD][T[nH][nM][nS]]`
+/// with at least one part. Its days, which are counted on the wall clock, and the seconds of its time part,
+/// which are real time.
+fn duration(text: &str) -> Option<(u64, u64)> {
+    let mut rest = text.strip_prefix('P')?;
+    if let Some(weeks) = number(&mut rest, 'W') {
+        return rest.is_empty().then_some((weeks.checked_mul(7)?, 0));
     }
-    (n == 0).then_some(seconds)
+    let days = number(&mut rest, 'D');
+    let mut seconds = None;
+    if let Some(time) = rest.strip_prefix('T') {
+        rest = time;
+        for (unit, length) in [('H', 3_600), ('M', 60), ('S', 1)] {
+            if let Some(n) = number(&mut rest, unit) {
+                let so_far: u64 = seconds.unwrap_or(0);
+                seconds = Some(so_far.checked_add(n.checked_mul(length)?)?);
+            }
+        }
+        seconds?;
+    }
+    (rest.is_empty() && (days.is_some() || seconds.is_some()))
+        .then_some((days.unwrap_or(0), seconds.unwrap_or(0)))
 }
 
 /// The minutes of a duration that is zero or negative and in whole minutes, such as `-PT15M` or `-P1DT2H`.
-fn minutes_before(duration: &str) -> Option<u64> {
-    let (negative, rest) = match duration.strip_prefix('-') {
+fn minutes_before(trigger: &str) -> Option<u64> {
+    let (negative, rest) = match trigger.strip_prefix('-') {
         Some(rest) => (true, rest),
-        None => (false, duration.strip_prefix('+').unwrap_or(duration)),
+        None => (false, trigger.strip_prefix('+').unwrap_or(trigger)),
     };
-    let seconds = seconds(rest)?;
+    let (days, seconds) = duration(rest)?;
+    let seconds = days.checked_mul(86_400)?.checked_add(seconds)?;
     ((negative || seconds == 0) && seconds % 60 == 0).then_some(seconds / 60)
 }
 
@@ -172,13 +182,23 @@ fn in_form_of_start(p: &Property, value: &str, tz: Option<&str>) -> Result<Strin
     Ok(converted.to_string())
 }
 
-/// The start with a positive `DURATION` added on the wall clock; whole days for a date.
-fn after(start: When, duration: &str) -> Option<When> {
-    let length = seconds(duration.strip_prefix('+').unwrap_or(duration))?;
-    let length = Duration::try_seconds(i64::try_from(length).ok()?)?;
+/// The start, in the zone `tz`, with a positive `DURATION` added: its days on the wall clock, its time part
+/// in real time, so that `PT8H` is eight hours also across a change of the clocks. For a date, whole days.
+fn after(start: When, tz: Option<&str>, length: &str) -> Option<When> {
+    let (days, seconds) = duration(length.strip_prefix('+').unwrap_or(length))?;
+    let days = Duration::try_days(i64::try_from(days).ok()?)?;
+    let seconds = Duration::try_seconds(i64::try_from(seconds).ok()?)?;
     Some(match start {
-        When::Date(d) => When::Date(d.checked_add_signed(length)?),
-        When::Timed(t) => When::Timed(t.checked_add_signed(length)?),
+        When::Date(d) => When::Date(d.checked_add_signed(days)?.checked_add_signed(seconds)?),
+        When::Timed(t) => {
+            let day = t.checked_add_signed(days)?;
+            if seconds.is_zero() {
+                return Some(When::Timed(day));
+            }
+            let zone = parse_tz(tz?).ok()?;
+            let end = to_utc(day, zone).checked_add_signed(seconds)?;
+            When::Timed(end.with_timezone(&zone).naive_local())
+        }
     })
 }
 
@@ -216,11 +236,15 @@ fn utc(name: &str, t: DateTime<Utc>) -> String {
     line(name, None, &t.format("%Y%m%dT%H%M%SZ").to_string())
 }
 
-/// A date or a time as the services give it (`2026-10-07`, or `2026-10-07T09:00:00` with a zone).
+/// A date or a time as the services give it (`2026-10-07`, or `2026-10-07T09:00:00` with a zone). A time in
+/// `UTC` is written with a `Z`, which a client reads without looking a zone up.
 fn when_line(name: &str, value: &str, tz: Option<&str>) -> String {
     let value = value.replace(['-', ':'], "");
-    let param = tz.map_or(("VALUE", "DATE"), |tz| ("TZID", tz));
-    line(name, Some(param), &value)
+    match tz {
+        Some("UTC") => line(name, None, &format!("{value}Z")),
+        Some(tz) => line(name, Some(("TZID", tz)), &value),
+        None => line(name, Some(("VALUE", "DATE")), &value),
+    }
 }
 
 /// `related_end`: the alarm counts from the component's end, a to-do's `DUE`.
@@ -433,8 +457,8 @@ fn event_write(c: &Component, uid: &str) -> Result<EventWrite, DavError> {
         // Without either an all-day event lasts its day; a timed one has no length, which the service
         // refuses.
         let end = match (prop(c, "DURATION"), start) {
-            (Some(d), _) => after(start, d.val.as_str().trim()),
-            (None, When::Date(_)) => after(start, "P1D"),
+            (Some(d), _) => after(start, tz_of_start, d.val.as_str().trim()),
+            (None, When::Date(_)) => after(start, None, "P1D"),
             (None, When::Timed(_)) => Some(start),
         };
         end.ok_or_else(|| invalid("DURATION is not a length of time"))?
@@ -466,6 +490,35 @@ fn event_write(c: &Component, uid: &str) -> Result<EventWrite, DavError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_forms() {
+        for (text, read) in [
+            ("P2W", Some((14, 0))),
+            ("P3D", Some((3, 0))),
+            ("PT90M", Some((0, 5400))),
+            ("P1DT2H3M4S", Some((1, 7384))),
+            ("PT1H30S", Some((0, 3630))),
+            ("PT0S", Some((0, 0))),
+            ("P1M", None),
+            ("P1Y", None),
+            ("PT1D", None),
+            ("P1W2D", None),
+            ("P1H", None),
+            ("PT1M1H", None),
+            ("P1DT", None),
+            ("PT", None),
+            ("P", None),
+            ("PT5", None),
+            ("P1D1D", None),
+            ("PT1.5H", None),
+            ("-PT1H", None),
+            ("1D", None),
+            ("", None),
+        ] {
+            assert_eq!(duration(text), read, "{text}");
+        }
+    }
 
     #[test]
     fn durations() {

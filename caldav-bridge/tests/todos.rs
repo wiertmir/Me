@@ -193,6 +193,19 @@ async fn timed_due_keeps_its_zone() {
     let task = stored(&s, &l, "t2").await;
     assert_eq!(task["due"], "2026-10-07T07:00:00");
     assert_eq!(task["tz"], "UTC");
+    let t = read(&s, &l, "t2").await;
+    assert_eq!(t.val("DUE"), Some("20261007T070000Z"));
+    assert_eq!(t.param("DUE", "TZID"), None);
+
+    // What the bridge wrote reads back as it was stored.
+    let (_, _, ics) = get(&s, &l, "t2").await;
+    let (st, _, _) = s
+        .dav("PUT", &format!("{l}/t2.ics"), "alice", &[], &ics)
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let task = stored(&s, &l, "t2").await;
+    assert_eq!(task["due"], "2026-10-07T07:00:00");
+    assert_eq!(task["tz"], "UTC");
 }
 
 #[tokio::test]

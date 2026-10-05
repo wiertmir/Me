@@ -177,7 +177,45 @@ async fn utc_event_is_stored_as_utc() {
     assert_eq!(ev["start"], "2026-10-05T07:00:00");
     assert_eq!(ev["end"], "2026-10-05T08:00:00");
     let e = read(&s, &c, "e1").await;
-    assert_eq!(e.lines("DTSTART"), [("TZID=UTC", "20261005T070000")]);
+    assert_eq!(e.lines("DTSTART"), [("", "20261005T070000Z")]);
+    assert_eq!(e.lines("DTEND"), [("", "20261005T080000Z")]);
+
+    // What the bridge wrote reads back as it was stored.
+    let (_, _, ics) = get(&s, &c, "e1").await;
+    let (st, _, _) = s
+        .dav("PUT", &format!("{c}/e1.ics"), "alice", &[], &ics)
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let ev = &stored(&s, &c, "e1").await[0];
+    assert_eq!(ev["tz"], "UTC");
+    assert_eq!(ev["start"], "2026-10-05T07:00:00");
+    assert_eq!(ev["end"], "2026-10-05T08:00:00");
+}
+
+/// The clocks in Warsaw go back at 01:00 UTC on 25 October 2026, from 03:00 to 02:00.
+#[tokio::test]
+async fn end_in_another_zone_across_dst() {
+    let s = Stack::spawn().await;
+    let c = calendar(&s).await;
+    let body = "DTSTART;TZID=Europe/Warsaw:20261025T010000\r\nDTEND:20261025T020000Z";
+    assert_eq!(put(&s, &c, "e1", body, &[]).await, StatusCode::CREATED);
+    assert_eq!(stored(&s, &c, "e1").await[0]["end"], "2026-10-25T03:00:00");
+}
+
+/// Days and weeks are counted on the wall clock, hours, minutes and seconds in real time.
+#[tokio::test]
+async fn duration_across_dst_is_exact_time() {
+    let s = Stack::spawn().await;
+    let c = calendar(&s).await;
+    for (uid, duration, end) in [
+        ("e1", "PT8H", "2026-10-25T05:00:00"),
+        ("e2", "P1D", "2026-10-25T22:00:00"),
+        ("e3", "P1DT1H", "2026-10-25T23:00:00"),
+    ] {
+        let body = format!("DTSTART;TZID=Europe/Warsaw:20261024T220000\r\nDURATION:{duration}");
+        assert_eq!(put(&s, &c, uid, &body, &[]).await, StatusCode::CREATED);
+        assert_eq!(stored(&s, &c, uid).await[0]["end"], end, "{duration}");
+    }
 }
 
 #[tokio::test]
@@ -542,6 +580,8 @@ async fn refusals() {
         format!("{WARSAW_9_TO_10}\r\n{rule}\r\nEXDATE;VALUE=DATE:20261012"),
         "DTSTART;TZID=Europe/Warsaw:20261005T090000\r\nDTEND;VALUE=DATE:20261006".to_owned(),
         "DTSTART;TZID=Europe/Warsaw:20261005T090000\r\nDURATION:-PT1H".to_owned(),
+        "DTSTART;TZID=Europe/Warsaw:20261005T090000\r\nDURATION:P1M".to_owned(),
+        "DTSTART;TZID=Europe/Warsaw:20261005T090000\r\nDURATION:PT1D".to_owned(),
         "SUMMARY:no start".to_owned(),
         // Changed occurrences come with the next task.
         format!("{WARSAW_9_TO_10}\r\nRECURRENCE-ID;TZID=Europe/Warsaw:20261005T090000"),
