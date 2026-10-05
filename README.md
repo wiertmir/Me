@@ -343,9 +343,15 @@ but treat such a log as sensitive, or leave the query string out of it.
 1. In auth-web open Account, then App passwords, and create one. Thunderbird gets this, not your
    password.
 2. In Thunderbird choose Calendar, New Calendar, On the Network. Enter your user name (or email
-   address) and, as the location, `https://<host>`. Enter the app password when asked, then tick the
+   address) and, as the location, `https://<host>`. If Thunderbird does not find the calendars from
+   that alone, enter `https://<host>/dav/`. Enter the app password when asked, then tick the
    calendars and task lists that are found.
 3. Check that it works:
+   - first, a reminder: dismiss or snooze one in Thunderbird, synchronise, restart Thunderbird, and
+     see whether it appears again. Thunderbird records that a reminder was dismissed or snoozed
+     inside the item (`X-MOZ-LASTACK`, `X-MOZ-SNOOZE-TIME`), and the bridge does not keep such
+     properties, so a dismissed reminder may appear again after a synchronisation or a restart.
+     This is not confirmed; if it happens, it needs a new field in the services;
    - an event created in Thunderbird appears in `GET /calendar/v1/…`, and an event created there
      appears in Thunderbird;
    - a repeating event in which you move one occurrence shows the moved occurrence in both;
@@ -362,12 +368,27 @@ How it behaves:
   created with a repeat rule but no due date is stored as a plain to-do, and removing the due date
   from a repeating to-do ends its series.
 - A recurring event with changed occurrences is written in several steps. If one fails midway the
-  event is left partly updated, and the client reloads that state.
+  event is left partly updated, and the client reloads that state. The bridge logs a warning
+  (`event_partly_written`) when that happens.
+
+Known limits:
+
+- A dismissed or snoozed reminder may appear again after a synchronisation or a restart of
+  Thunderbird, which keeps that state in properties of the item (`X-MOZ-LASTACK`,
+  `X-MOZ-SNOOZE-TIME`) that the bridge does not keep. Not confirmed; if it happens, it needs a new
+  field in the services.
+- A reminder on a to-do that has both a start and a due date is kept relative to the due date, so
+  it may move.
+- A `PUT` with more than 500 changed occurrences of one event is refused.
 
 Refused with an error: floating times (a time with no zone), zones that are not IANA names,
 `RDATE`, `EXRULE`, more than one `RRULE`, "this and following" changes of a series
 (`RANGE=THISANDFUTURE`), a changed occurrence that is all-day when its series is not (or the
-reverse), and a timed event with no end and no duration.
+reverse), and a timed event with no end and no duration. Also refused: an event whose end is not
+after its start (a zero-length event, or an all-day event ending the day it starts in iCalendar's
+terms); an `EXDATE` given as a date for a timed series; a summary or location over 500 characters, a
+description over 10,000, a uid over 255; a repeat rule finer than daily (`FREQ=HOURLY`, `BYHOUR` and
+the like); a request body nested too deeply or with an oversized tag.
 
 Not supported: creating, renaming or deleting calendars and task lists from the client, invitations,
 free/busy, incremental sync reports, time-zone definitions in the files, filters in queries. It has

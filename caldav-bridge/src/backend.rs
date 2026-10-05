@@ -97,23 +97,21 @@ struct Listed {
 }
 
 impl Backend<'_> {
-    /// Every calendar, then every task list, of the user.
-    pub async fn collections(&self) -> Result<Vec<Collection>, DavError> {
-        let mut all = Vec::new();
-        for (service, path, kind) in [
-            (Service::Calendar, "/calendar/v1/calendars", Kind::Events),
-            (Service::Tasks, "/tasks/v1/lists", Kind::Todos),
-        ] {
-            let listed: Vec<Listed> = self.json(self.request(service, Method::GET, path)).await?;
-            all.extend(listed.into_iter().map(|l| Collection {
-                kind,
-                id: l.id,
-                name: l.name,
-                color: l.color,
-                sync_token: l.sync_token,
-            }));
-        }
-        Ok(all)
+    /// The user's calendars, or their task lists: only that kind's service is asked.
+    pub async fn collections(&self, kind: Kind) -> Result<Vec<Collection>, DavError> {
+        let (service, path) = match kind {
+            Kind::Events => (Service::Calendar, "/calendar/v1/calendars"),
+            Kind::Todos => (Service::Tasks, "/tasks/v1/lists"),
+        };
+        let listed: Vec<Listed> = self.json(self.request(service, Method::GET, path)).await?;
+        let collection = |l: Listed| Collection {
+            kind,
+            id: l.id,
+            name: l.name,
+            color: l.color,
+            sync_token: l.sync_token,
+        };
+        Ok(listed.into_iter().map(collection).collect())
     }
 }
 

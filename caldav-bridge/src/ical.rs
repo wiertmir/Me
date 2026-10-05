@@ -15,6 +15,8 @@ use crate::{
 /// The service's limits for reminders: how many, and how long before.
 const MAX_REMINDERS: usize = 5;
 const MAX_REMINDER_MINUTES: u64 = 40_320;
+/// Each changed occurrence of an item is a write to the service of its own.
+const MAX_OVERRIDES: usize = 500;
 
 fn invalid(message: impl Into<String>) -> DavError {
     DavError::new(StatusCode::FORBIDDEN, message).precondition("valid-calendar-data")
@@ -428,6 +430,11 @@ pub fn ical_to_events(body: &str) -> Result<ItemIn, DavError> {
             "an item is one event, or one series with its changed occurrences",
         ));
     };
+    if parts.len() - 1 > MAX_OVERRIDES {
+        return Err(invalid(format!(
+            "at most {MAX_OVERRIDES} changed occurrences"
+        )));
+    }
     let uid = text(series, "UID");
     if uid.is_empty() {
         return Err(invalid("the VEVENT has no UID"));
@@ -601,6 +608,34 @@ mod tests {
             "END:A\r\n".repeat(200_000)
         );
         assert!(ical_to_todo(&body).is_err());
+    }
+
+    /// Each changed occurrence is a write to the service of its own.
+    #[test]
+    fn changed_occurrences_are_limited() {
+        let item = |changed: usize| {
+            let day = |i| NaiveDate::from_ymd_opt(2026, 1, 1).unwrap() + Duration::days(i as i64);
+            let overrides: String = (0..changed)
+                .map(|i| {
+                    let d = day(i).format("%Y%m%d");
+                    format!(
+                        "BEGIN:VEVENT\r\nUID:s1\r\nRECURRENCE-ID:{d}T090000Z\r\n\
+                         DTSTART:{d}T100000Z\r\nDTEND:{d}T110000Z\r\nEND:VEVENT\r\n"
+                    )
+                })
+                .collect();
+            ical_to_events(&format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:s1\r\nDTSTART:20260101T090000Z\r\n\
+                 DTEND:20260101T100000Z\r\nRRULE:FREQ=DAILY\r\nEND:VEVENT\r\n{overrides}END:VCALENDAR\r\n"
+            ))
+        };
+        assert_eq!(item(500).ok().unwrap().overrides.len(), 500);
+        let Err(e) = item(501) else {
+            panic!("501 changed occurrences are taken");
+        };
+        assert_eq!(e.status(), StatusCode::FORBIDDEN);
+        assert_eq!(e.precondition, Some("valid-calendar-data"));
+        assert_eq!(e.message, "at most 500 changed occurrences");
     }
 
     #[test]

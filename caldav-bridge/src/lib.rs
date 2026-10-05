@@ -85,11 +85,7 @@ impl IntoResponse for DavError {
     fn into_response(self) -> Response {
         let (content_type, body) = match self.precondition {
             Some(p) => {
-                let text = self
-                    .message
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;");
+                let text = xml::escape(&self.message);
                 (
                     "application/xml; charset=utf-8",
                     format!(
@@ -173,7 +169,8 @@ mod tests {
             let b = axum::body::to_bytes(e.into_response().into_body(), 4096).await;
             String::from_utf8(b.unwrap().to_vec()).unwrap()
         };
-        let xml = DavError::new(StatusCode::FORBIDDEN, "a < b").precondition("valid-calendar-data");
+        let xml =
+            DavError::new(StatusCode::FORBIDDEN, "a <\u{1} b").precondition("valid-calendar-data");
         assert!(
             body(xml)
                 .await

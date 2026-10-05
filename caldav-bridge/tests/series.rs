@@ -540,3 +540,33 @@ async fn utc_recurrence_id_matches_the_zoned_occurrence() {
     );
     assert_eq!(all[1].lines("DTSTART"), [("", "20261012T090000Z")]);
 }
+
+/// A client that moves a whole series moves the `RECURRENCE-ID` of its changed occurrences with it.
+#[tokio::test]
+async fn moving_a_series_keeps_its_changed_occurrence_out_of_the_way() {
+    let s = Stack::spawn().await;
+    let c = calendar(&s).await;
+    let changed = moved(12, 11, "Later");
+    assert_eq!(put(&s, &c, &[SERIES, &changed]).await, StatusCode::CREATED);
+    let before = stored(&s, &c, "s1").await;
+
+    let series = SERIES
+        .replace("T090000", "T100000")
+        .replace("T100000\r\nRRULE", "T110000\r\nRRULE");
+    let changed = changed.replace(
+        "RECURRENCE-ID;TZID=Europe/Warsaw:20261012T090000",
+        "RECURRENCE-ID;TZID=Europe/Warsaw:20261012T100000",
+    );
+    let st = put(&s, &c, &[&series, &changed]).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+
+    let parts = stored(&s, &c, "s1").await;
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0]["id"], before[0]["id"]);
+    assert_eq!(parts[0]["start"], "2026-10-05T10:00:00");
+    assert_eq!(parts[0]["end"], "2026-10-05T11:00:00");
+    assert_eq!(parts[1]["original_start"], "2026-10-12T10:00:00");
+    assert_eq!(parts[1]["start"], "2026-10-12T11:00:00");
+    assert_ne!(parts[1]["id"], before[1]["id"]);
+    assert_eq!(starts(&s, &c, 12, 7).await, ["2026-10-12T11:00:00"]);
+}

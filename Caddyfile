@@ -70,6 +70,7 @@
 	# caldav-bridge: CalDAV for clients such as Thunderbird. It takes no service secret and the headers
 	# above mean nothing to it; it reads Caddy's own X-Forwarded-For. `/dav` is listed apart from
 	# `/dav/*`, which does not match it.
+	# The bridge trusts the address Caddy sets: the last entry of that header is what it passes on.
 	handle /dav {
 		reverse_proxy 127.0.0.1:8085
 	}

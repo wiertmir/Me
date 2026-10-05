@@ -41,7 +41,8 @@ async fn serve(router: Router) -> String {
     base
 }
 
-/// The verify endpoint of auth-service, for two known users, a rate-limited one and no one else.
+/// The verify endpoint of auth-service, for two known users (one also by her email address), a
+/// rate-limited one and no one else.
 async fn verify_stub(seen: Arc<Mutex<Option<String>>>) -> String {
     async fn verify(
         State(seen): State<Arc<Mutex<Option<String>>>>,
@@ -54,7 +55,7 @@ async fn verify_stub(seen: Arc<Mutex<Option<String>>>) -> String {
             .map(|v| v.to_str().unwrap().to_owned());
         let (user, pass) = (b["username"].as_str().unwrap(), b["password"].as_str());
         match (user, pass) {
-            ("alice", Some("pw-alice")) => {
+            ("alice" | "alice@example.com", Some("pw-alice")) => {
                 Json(json!({"user_id": ALICE, "username": "alice"})).into_response()
             }
             ("alice", Some("pw:x:y")) => {
@@ -81,15 +82,26 @@ impl Stack {
     pub async fn spawn() -> Self {
         let forwarded_for = Arc::new(Mutex::new(None));
         let auth = verify_stub(forwarded_for.clone()).await;
-        Self::spawn_with_auth(&auth, forwarded_for).await
+        Self::spawn_with(&auth, false, forwarded_for).await
     }
 
     /// The stack with auth-service at a closed port.
     pub async fn spawn_auth_down() -> Self {
-        Self::spawn_with_auth("http://127.0.0.1:1", Arc::default()).await
+        Self::spawn_with("http://127.0.0.1:1", false, Arc::default()).await
     }
 
-    async fn spawn_with_auth(auth: &str, forwarded_for: Arc<Mutex<Option<String>>>) -> Self {
+    /// The stack with the bridge's tasks-service at a closed port.
+    pub async fn spawn_tasks_down() -> Self {
+        let forwarded_for = Arc::new(Mutex::new(None));
+        let auth = verify_stub(forwarded_for.clone()).await;
+        Self::spawn_with(&auth, true, forwarded_for).await
+    }
+
+    async fn spawn_with(
+        auth: &str,
+        tasks_down: bool,
+        forwarded_for: Arc<Mutex<Option<String>>>,
+    ) -> Self {
         let issuer = "http://127.0.0.1:1"; // only the service-secret path is used
         let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
         let cal_cfg = calendar_service::Config::for_tests(
@@ -107,8 +119,13 @@ impl Stack {
             tasks_service::build_state(tasks_cfg).unwrap(),
         ))
         .await;
+        let bridge_tasks = if tasks_down {
+            "http://127.0.0.1:1"
+        } else {
+            &tasks
+        };
         let cfg = Config::for_tests(
-            [auth, &calendar, &tasks],
+            [auth, &calendar, bridge_tasks],
             [AUTH_SECRET, CALENDAR_SECRET, TASKS_SECRET],
         );
         let base = serve(app(build_state(cfg).unwrap())).await;

@@ -181,6 +181,45 @@ async fn doctype_is_refused() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+/// The XML parser recurses once per nested element, and a stack that runs out ends the process.
+#[tokio::test]
+async fn deeply_nested_xml_is_refused() {
+    let s = Stack::spawn().await;
+    let body = format!("{}{}", "<a>".repeat(20_000), "</a>".repeat(20_000));
+    let (status, answer) = propfind(&s, "/dav/", "0", &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(answer.contains("nested too deeply"), "{answer}");
+    // The bridge is still there.
+    let (status, _) = propfind(&s, "/dav/", "0", "").await;
+    assert_eq!(status, StatusCode::MULTI_STATUS);
+}
+
+/// The XML parser compares every attribute of a tag with every other one.
+#[tokio::test]
+async fn huge_tag_is_refused() {
+    let s = Stack::spawn().await;
+    let attributes: String = (0..100_000).map(|i| format!(" a{i}=\"\"")).collect();
+    let body = format!("<a{attributes}/>");
+    let asked = std::time::Instant::now();
+    let (status, answer) = propfind(&s, "/dav/", "0", &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(answer.contains("tag is too long"), "{answer}");
+    assert!(asked.elapsed().as_secs() < 2, "{:?}", asked.elapsed());
+}
+
+/// A poll of one collection asks only the service that holds it.
+#[tokio::test]
+async fn calendar_poll_survives_tasks_service_down() {
+    let s = Stack::spawn_tasks_down().await;
+    let cal = format!("{}/", support::calendar(&s).await);
+    for depth in ["0", "1"] {
+        let (status, _) = propfind(&s, &cal, depth, COLLECTION_PROPS).await;
+        assert_eq!(status, StatusCode::MULTI_STATUS, "depth {depth}");
+    }
+    let (status, _) = propfind(&s, "/dav/calendars/alice/", "1", COLLECTION_PROPS).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
 #[tokio::test]
 async fn empty_propfind_body_lists_all_properties() {
     let s = Stack::spawn().await;

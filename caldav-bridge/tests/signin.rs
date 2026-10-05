@@ -65,7 +65,7 @@ async fn client_address_is_passed_on() {
     let s = Stack::spawn().await;
     let h = [("x-forwarded-for", "203.0.113.9, 10.0.0.1")];
     s.dav("GET", "/dav/", "alice", &h, "").await;
-    assert_eq!(s.last_forwarded_for().as_deref(), Some("203.0.113.9"));
+    assert_eq!(s.last_forwarded_for().as_deref(), Some("10.0.0.1"));
     s.dav("GET", "/dav/", "alice", &[], "").await;
     assert_eq!(s.last_forwarded_for(), None);
 }
@@ -87,4 +87,22 @@ async fn password_may_contain_colons() {
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
+}
+
+/// Addresses carry the username auth-service returns, whatever the client signed in with.
+#[tokio::test]
+async fn sign_in_by_email_uses_the_username() {
+    let s = Stack::spawn().await;
+    for (path, status) in [
+        ("/dav/principals/alice/", StatusCode::MULTI_STATUS),
+        ("/dav/principals/alice@example.com/", StatusCode::NOT_FOUND),
+    ] {
+        let r = s
+            .req("PROPFIND", path)
+            .basic_auth("alice@example.com", Some("pw-alice"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), status, "{path}");
+    }
 }

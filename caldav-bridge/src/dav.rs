@@ -73,9 +73,19 @@ pub async fn handle(
         }
         ("GET", Some(Target::Item(Kind::Events, cal, uid))) => get_event(&b, cal, &uid).await,
         ("PUT", Some(Target::Item(Kind::Events, cal, uid))) => {
-            let answer = put_event(&b, cal, &uid, &headers, &body).await?;
-            tracing::info!(event = "event_written", user_id = %signed.user_id, calendar_id = %cal);
-            Ok(answer)
+            let mut wrote = false;
+            let answer = put_event(&b, cal, &uid, &headers, &body, &mut wrote).await;
+            match &answer {
+                Ok(_) => {
+                    tracing::info!(event = "event_written", user_id = %signed.user_id, calendar_id = %cal)
+                }
+                // The write is not atomic: parts of the item are stored and the rest is not.
+                Err(_) if wrote => {
+                    tracing::warn!(event = "event_partly_written", user_id = %signed.user_id, calendar_id = %cal)
+                }
+                Err(_) => {}
+            }
+            answer
         }
         ("DELETE", Some(Target::Item(Kind::Events, cal, uid))) => {
             let parts = stored_event(&b, cal, &uid, &headers).await?;
@@ -218,13 +228,15 @@ async fn get_event(b: &Backend<'_>, cal: Uuid, uid: &str) -> Result<Response, Da
 
 /// Writes an item part by part: the single event or the series, then each changed occurrence, then the
 /// stored ones the body no longer has. A part the body does not change is not written, so it keeps its
-/// revision. Not atomic: the first call that fails ends the write with its error and what was written stays.
+/// revision. Not atomic: the first call that fails ends the write with its error and what was written stays;
+/// `wrote` then tells whether anything was.
 async fn put_event(
     b: &Backend<'_>,
     cal: Uuid,
     uid: &str,
     headers: &HeaderMap,
     body: &[u8],
+    wrote: &mut bool,
 ) -> Result<Response, DavError> {
     let item = ical::ical_to_events(utf8(body)?)?;
     named_by_uid(uid, &item.uid)?;
@@ -236,6 +248,7 @@ async fn put_event(
         Some(old) => {
             if EventWrite::from(old) != item.main {
                 b.replace_event(old.id, &item.main).await?;
+                *wrote = true;
             }
             (old.id, StatusCode::NO_CONTENT)
         }
@@ -244,6 +257,7 @@ async fn put_event(
             StatusCode::CREATED,
         ),
     };
+    *wrote |= status == StatusCode::CREATED;
     let old_overrides = stored.get(1..).unwrap_or_default();
     for new in item.overrides.iter().cloned() {
         // The service takes an override's occurrence only together with its series.
@@ -255,14 +269,11 @@ async fn put_event(
             .iter()
             .find(|old| old.original_start == new.original_start);
         match old {
-            Some(old) if EventWrite::from(old) == new => {}
-            Some(old) => {
-                b.replace_event(old.id, &new).await?;
-            }
-            None => {
-                b.create_event(cal, &new).await?;
-            }
-        }
+            Some(old) if EventWrite::from(old) == new => continue,
+            Some(old) => b.replace_event(old.id, &new).await?,
+            None => b.create_event(cal, &new).await?,
+        };
+        *wrote = true;
     }
     for old in old_overrides {
         let kept = |new: &EventWrite| new.original_start == old.original_start;
@@ -272,6 +283,7 @@ async fn put_event(
                 Err(e) if e.status() == StatusCode::NOT_FOUND => {}
                 other => other?,
             }
+            *wrote = true;
         }
     }
     // No `ETag`: what is stored is not the body as sent, so the client reads the item back.
@@ -397,21 +409,24 @@ async fn propfind(
         Target::Home => {
             entries.push(plain(target));
             if depth == 1 {
-                for c in b.collections().await? {
-                    entries.push(Entry {
-                        target: Target::Collection(c.kind, c.id),
-                        collection: Some(c),
-                        item: None,
-                    });
+                // Calendars, then task lists.
+                for kind in [Kind::Events, Kind::Todos] {
+                    for c in b.collections(kind).await? {
+                        entries.push(Entry {
+                            target: Target::Collection(kind, c.id),
+                            collection: Some(c),
+                            item: None,
+                        });
+                    }
                 }
             }
         }
         Target::Collection(kind, id) => {
             let mut c = b
-                .collections()
+                .collections(kind)
                 .await?
                 .into_iter()
-                .find(|c| c.kind == kind && c.id == id)
+                .find(|c| c.id == id)
                 .ok_or_else(not_found)?;
             let mut listed = Vec::new();
             // The change marker read with the items is the one they belong to.

@@ -101,7 +101,8 @@ Every `/dav/*` request carries HTTP Basic credentials: a username (or email)
 and an app password. The bridge sends them to auth-service's verify endpoint
 with the service secret and the client's address in `X-Forwarded-For`, and gets
 the user id and username. Nothing is cached: a deleted app password stops
-working at the next request.
+working at the next request. The address passed on is the last entry of the
+incoming `X-Forwarded-For`, the one Caddy sets.
 
 - No or malformed credentials, or a 401 from auth-service: 401 with
   `WWW-Authenticate: Basic realm="Me"`.
@@ -143,7 +144,8 @@ that way; it lets the bridge find an item without storing anything.
 | `DELETE` | an item | Delete; honours `If-Match` |
 
 Anything else is 405. `PROPFIND` with depth `infinity` is 403. Request bodies
-are limited to 1 MB. Text placed into XML answers has the characters XML 1.0
+are limited to 1 MB. A request's XML is refused (400) when it is nested more
+than 32 elements deep or holds a tag longer than 8 KB. Text placed into XML answers has the characters XML 1.0
 forbids removed.
 
 Properties answered (others are reported as not found):
@@ -187,7 +189,8 @@ Reading what a client sends:
 - Refused, because dropping them would change when the event happens: a `TZID`
   that is not an IANA zone name; a time without `Z` and without `TZID`
   (floating); `RDATE`; more than one `RRULE`; an `EXRULE`; `RANGE=THISANDFUTURE`;
-  a body nested more than 8 components deep.
+  a body nested more than 8 components deep; more than 500 changed occurrences
+  in one item.
 
 **Writing an item** is several calls to calendar-service:
 
@@ -197,7 +200,8 @@ Reading what a client sends:
    `RECURRENCE-ID` is stored. Delete stored overrides the body no longer has.
 
 It is not atomic. When a call fails the bridge stops and answers with that
-error, and what was written stays. Because the item's etag has then changed, a
+error, and what was written stays; a failure after something was written is
+logged as a warning. Because the item's etag has then changed, a
 client that retries with `If-Match` is told the item changed and reloads it.
 Two refusals the bridge can tell from the body alone, changed occurrences on an
 event without a rule and a changed occurrence whose all-day form differs from

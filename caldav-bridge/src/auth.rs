@@ -55,12 +55,13 @@ impl FromRequestParts<AppState> for Signed {
             .post(format!("{}/api/app-passwords/verify", state.cfg.auth_url))
             .header("x-service-secret", &state.cfg.auth_secret)
             .json(&json!({"username": username, "password": password}));
-        // The client's address, for auth-service's rate limit: the first one Caddy put there.
+        // The client's address, for auth-service's rate limit: the last entry, the one the nearest proxy
+        // (Caddy) set. An earlier entry is whatever the client sent, if a proxy ever appends to the header.
         if let Some(ip) = parts
             .headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
+            .and_then(|v| v.rsplit(',').next())
         {
             req = req.header("x-forwarded-for", ip.trim());
         }
