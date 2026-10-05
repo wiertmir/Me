@@ -1,0 +1,21 @@
+[package]
+name = "caldav-bridge"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+base64 = "0.23.1"
+common = { version = "0.1.0", path = "../common" }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+uuid = { version = "1.27.0", features = ["serde", "v4"] }
+
+[dev-dependencies]
+calendar-service = { path = "../calendar-service" }
+tasks-service = { path = "../tasks-service" }
+tempfile = "3.27.0"
